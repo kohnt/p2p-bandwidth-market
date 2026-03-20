@@ -1,0 +1,9 @@
+{
+  "session_id": "string",
+  "provider_id": "string",
+  "requester_id": "string",
+  "start_time": "timestamp",
+  "byte_quota": 0,
+  "bytes_used": 0,
+  "status": "active"
+}

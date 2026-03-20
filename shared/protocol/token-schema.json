@@ -1,0 +1,7 @@
+{
+  "token_id": "string",
+  "owner_id": "string",
+  "value": 0,
+  "expiry": "timestamp",
+  "signature": "string"
+}
