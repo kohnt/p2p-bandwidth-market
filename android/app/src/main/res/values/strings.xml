@@ -10,6 +10,7 @@
     <string name="permission_rationale">Location is required for Wi‑Fi connection management.</string>
     <string name="start_hotspot">Start Hotspot</string>
     <string name="open_hotspot_settings">Open Hotspot Settings</string>
+    <string name="use_current_hotspot">I enabled hotspot</string>
     <string name="hotspot_status_waiting">Waiting for hotspot…</string>
     <string name="hotspot_ready">Hotspot ready</string>
     <string name="ssid_label">SSID</string>
@@ -20,4 +21,13 @@
     <string name="connect_status_connecting">Connecting…</string>
     <string name="connect_status_connected">Connected</string>
     <string name="connect_status_failed">Connection failed</string>
+    <string name="enter_hotspot_info">Enter hotspot details</string>
+    <string name="ssid_hint">Hotspot SSID</string>
+    <string name="password_hint">Hotspot password</string>
+    <string name="start_sharing">Start Sharing</string>
+    <string name="cancel">Cancel</string>
+    <string name="invalid_credentials">Please enter SSID and password</string>
+    <string name="connect_now">Connect Now</string>
+    <string name="manual_connect_prompt">Didn’t receive hotspot details. Enter them to connect.</string>
+    <string name="retry_connect">Retry</string>
 </resources>

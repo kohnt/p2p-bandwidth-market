@@ -19,53 +19,25 @@ import com.example.p2pdata.wifi.HotspotController;
 
 public class ProviderActivity extends AppCompatActivity {
     private TextView status;
-    private TextView ssidText;
-    private TextView passText;
-    private Button startBtn;
     private Button openSettingsBtn;
     private HotspotController hotspotController;
     private NfcAdapter nfcAdapter;
     private String currentSsid;
     private String currentPass;
+    private boolean launchedSettings = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_provider);
         status = findViewById(R.id.provider_status);
-        ssidText = findViewById(R.id.provider_ssid);
-        passText = findViewById(R.id.provider_password);
-        startBtn = findViewById(R.id.btn_start_hotspot);
         openSettingsBtn = findViewById(R.id.btn_open_hotspot_settings);
         hotspotController = new HotspotController();
         nfcAdapter = NfcAdapter.getDefaultAdapter(this);
 
-        startBtn.setOnClickListener(v -> {
-            if (Build.VERSION.SDK_INT >= 26) {
-                status.setText(R.string.hotspot_status_waiting);
-                hotspotController.startLocalOnlyHotspot(this, new HotspotController.Callback() {
-                    @Override
-                    public void onStarted(String ssid, String password) {
-                        currentSsid = ssid;
-                        currentPass = password;
-                        status.setText(R.string.hotspot_ready);
-                        ssidText.setText(ssid);
-                        passText.setText(password);
-                        enableNfcShare();
-                    }
-
-                    @Override
-                    public void onFailed(String reason) {
-                        showInfo("Hotspot failed. Use system settings instead.");
-                    }
-                });
-            } else {
-                showInfo("Local-only hotspot not supported. Use system settings.");
-            }
-        });
-
         openSettingsBtn.setOnClickListener(v -> {
             try {
+                launchedSettings = true;
                 startActivity(new Intent(Settings.ACTION_WIRELESS_SETTINGS));
             } catch (Exception e) {
                 showInfo("Open settings manually.");
@@ -76,7 +48,11 @@ public class ProviderActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        enableNfcShare();
+        if (launchedSettings && (currentSsid == null || currentPass == null)) {
+            showCredentialsDialog();
+        } else {
+            enableNfcShare();
+        }
     }
 
     @Override
@@ -110,6 +86,29 @@ public class ProviderActivity extends AppCompatActivity {
             } catch (Throwable ignored) {
             }
         }
+    }
+
+    private void showCredentialsDialog() {
+        android.view.View view = getLayoutInflater().inflate(R.layout.dialog_hotspot_credentials, null);
+        android.widget.EditText ssidInput = view.findViewById(R.id.input_ssid);
+        android.widget.EditText passInput = view.findViewById(R.id.input_password);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.enter_hotspot_info)
+                .setView(view)
+                .setPositiveButton(R.string.start_sharing, (d, w) -> {
+                    String ssid = ssidInput.getText() != null ? ssidInput.getText().toString().trim() : "";
+                    String pw = passInput.getText() != null ? passInput.getText().toString().trim() : "";
+                    if (ssid.isEmpty() || pw.isEmpty()) {
+                        showInfo(getString(R.string.invalid_credentials));
+                        return;
+                    }
+                    currentSsid = ssid;
+                    currentPass = pw;
+                    status.setText(R.string.waiting_for_tap);
+                    enableNfcShare();
+                })
+                .setNegativeButton(R.string.cancel, null)
+                .show();
     }
 
     private void showInfo(String message) {
