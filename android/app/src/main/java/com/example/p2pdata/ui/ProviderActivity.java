@@ -84,7 +84,8 @@ public class ProviderActivity extends AppCompatActivity {
         super.onPause();
         if (nfcAdapter != null && Build.VERSION.SDK_INT < 29) {
             try {
-                nfcAdapter.setNdefPushMessage(null, this);
+                java.lang.reflect.Method setNdefPushMessage = nfcAdapter.getClass().getMethod("setNdefPushMessage", NdefMessage.class, android.app.Activity.class, android.app.Activity[].class);
+                setNdefPushMessage.invoke(nfcAdapter, null, this, new android.app.Activity[0]);
             } catch (Throwable ignored) {
             }
         }
@@ -104,7 +105,8 @@ public class ProviderActivity extends AppCompatActivity {
         NdefMessage msg = NfcBootstrap.createMessage(p);
         if (Build.VERSION.SDK_INT < 29) {
             try {
-                nfcAdapter.setNdefPushMessage(msg, this);
+                java.lang.reflect.Method setNdefPushMessage = nfcAdapter.getClass().getMethod("setNdefPushMessage", NdefMessage.class, android.app.Activity.class, android.app.Activity[].class);
+                setNdefPushMessage.invoke(nfcAdapter, msg, this, new android.app.Activity[0]);
             } catch (Throwable ignored) {
             }
         }

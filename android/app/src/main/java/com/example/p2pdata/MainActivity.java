@@ -89,7 +89,9 @@ public class MainActivity extends AppCompatActivity {
             if (Build.VERSION.SDK_INT < 29) {
                 NdefMessage msg = createBootstrapNdefMessage();
                 try {
-                    nfcAdapter.setNdefPushMessage(msg, this);
+                    // Use reflection to avoid compile-time error on API 34 where method is completely removed
+                    java.lang.reflect.Method setNdefPushMessage = nfcAdapter.getClass().getMethod("setNdefPushMessage", NdefMessage.class, android.app.Activity.class, android.app.Activity[].class);
+                    setNdefPushMessage.invoke(nfcAdapter, msg, this, new android.app.Activity[0]);
                 } catch (Throwable ignored) {
                 }
             }
@@ -103,7 +105,8 @@ public class MainActivity extends AppCompatActivity {
             nfcAdapter.disableReaderMode(this);
             if (Build.VERSION.SDK_INT < 29) {
                 try {
-                    nfcAdapter.setNdefPushMessage(null, this);
+                    java.lang.reflect.Method setNdefPushMessage = nfcAdapter.getClass().getMethod("setNdefPushMessage", NdefMessage.class, android.app.Activity.class, android.app.Activity[].class);
+                    setNdefPushMessage.invoke(nfcAdapter, null, this, new android.app.Activity[0]);
                 } catch (Throwable ignored) {
                 }
             }
