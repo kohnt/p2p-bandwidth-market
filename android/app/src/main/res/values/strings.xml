@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">P2P Data</string>
+    <string name="status_default">NFC status will appear here</string>
+    <string name="turn_on_nfc">Turn On NFC</string>
+    <string name="enable_sharing">Enable Sharing</string>
+    <string name="act_as_provider">I am Provider</string>
+    <string name="act_as_requester">I am Requester</string>
+    <string name="permission_title">Location Permission</string>
+    <string name="permission_rationale">Location is required for Wi‑Fi connection management.</string>
+    <string name="start_hotspot">Start Hotspot</string>
+    <string name="open_hotspot_settings">Open Hotspot Settings</string>
+    <string name="hotspot_status_waiting">Waiting for hotspot…</string>
+    <string name="hotspot_ready">Hotspot ready</string>
+    <string name="ssid_label">SSID</string>
+    <string name="password_label">Password</string>
+    <string name="share_via_nfc">Share via NFC</string>
+    <string name="waiting_for_tap">Hold devices together to share</string>
+    <string name="tap_to_connect">Tap a device to receive hotspot</string>
+    <string name="connect_status_connecting">Connecting…</string>
+    <string name="connect_status_connected">Connected</string>
+    <string name="connect_status_failed">Connection failed</string>
+</resources>
