@@ -19,7 +19,7 @@ public class ProxyServer {
     private final int port;
     private ServerSocket serverSocket;
     private boolean running = false;
-    private final ExecutorService threadPool = Executors.newCachedThreadPool();
+    private ExecutorService threadPool;
     private final AtomicLong totalBytesTransferred = new AtomicLong(0);
 
     public interface ProxyCallback {
@@ -32,33 +32,55 @@ public class ProxyServer {
         this.port = port;
     }
 
-    public void start(ProxyCallback callback) {
+    public synchronized void start(ProxyCallback callback) {
+        if (running) return;
+        
         this.callback = callback;
-        running = true;
-        threadPool.execute(() -> {
+        this.running = true;
+        this.threadPool = Executors.newCachedThreadPool();
+        
+        this.threadPool.execute(() -> {
             try {
                 serverSocket = new ServerSocket(port);
+                serverSocket.setReuseAddress(true);
                 Log.i(TAG, "Proxy Server started on port " + port);
                 while (running) {
-                    Socket clientSocket = serverSocket.accept();
-                    threadPool.execute(() -> handleClient(clientSocket));
+                    try {
+                        Socket clientSocket = serverSocket.accept();
+                        if (running) {
+                            threadPool.execute(() -> handleClient(clientSocket));
+                        } else {
+                            clientSocket.close();
+                        }
+                    } catch (IOException e) {
+                        if (running) Log.e(TAG, "Accept error: " + e.getMessage());
+                    }
                 }
             } catch (IOException e) {
-                if (running) {
-                    Log.e(TAG, "Proxy Server error: " + e.getMessage());
-                }
+                Log.e(TAG, "Proxy Server failed to start: " + e.getMessage());
+            } finally {
+                stop();
             }
         });
     }
 
-    public void stop() {
+    public synchronized void stop() {
+        if (!running) return;
+        
         running = false;
         try {
-            if (serverSocket != null) serverSocket.close();
+            if (serverSocket != null && !serverSocket.isClosed()) {
+                serverSocket.close();
+            }
         } catch (IOException e) {
             Log.e(TAG, "Error closing proxy server: " + e.getMessage());
         }
-        threadPool.shutdownNow();
+        
+        if (threadPool != null) {
+            threadPool.shutdownNow();
+            threadPool = null;
+        }
+        Log.i(TAG, "Proxy Server stopped");
     }
 
     private void handleClient(Socket clientSocket) {
@@ -75,7 +97,7 @@ public class ProxyServer {
             if (read < 4 || buf[1] != 0x01) return; // Command: Connect
 
             String host;
-            int port;
+            int targetPort;
             int addrType = buf[3];
             int offset = 4;
 
@@ -90,16 +112,17 @@ public class ProxyServer {
                 return; // Unsupported address type
             }
 
-            port = ((buf[offset] & 0xFF) << 8) | (buf[offset+1] & 0xFF);
+            targetPort = ((buf[offset] & 0xFF) << 8) | (buf[offset+1] & 0xFF);
 
-            Log.d(TAG, "Proxying to " + host + ":" + port);
+            Log.d(TAG, "Proxying to " + host + ":" + targetPort);
 
-            try (Socket targetSocket = new Socket(host, port)) {
+            try (Socket targetSocket = new Socket(host, targetPort)) {
                 out.write(new byte[]{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); // Success response
                 
                 InputStream targetIn = targetSocket.getInputStream();
                 OutputStream targetOut = targetSocket.getOutputStream();
 
+                // Use a separate thread to pipe one direction while this thread pipes the other
                 threadPool.execute(() -> {
                     try { pipe(in, targetOut); } catch (IOException ignored) {}
                 });
@@ -118,7 +141,6 @@ public class ProxyServer {
         int bytesRead;
         while (running && (bytesRead = src.read(buffer)) != -1) {
             dest.write(buffer, 0, bytesRead);
-            long total = totalBytesTransferred.addAndGet(bytesRead);
             if (callback != null) callback.onBytesTransferred(bytesRead);
         }
     }

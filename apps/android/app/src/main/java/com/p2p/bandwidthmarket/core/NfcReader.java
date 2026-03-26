@@ -10,13 +10,13 @@ import android.util.Log;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
-public class NfcReader implements NfcAdapter.ReaderCallback {
+public class NfcReader {
     private static final String TAG = "NfcReader";
     private final NfcAdapter nfcAdapter;
     private final Activity activity;
 
     public interface ReaderCallback {
-        void onTokenSent(String response);
+        void onHotspotInfoReceived(String ssid, String passphrase);
         void onError(String error);
     }
 
@@ -30,44 +30,46 @@ public class NfcReader implements NfcAdapter.ReaderCallback {
     public void startReading(ReaderCallback callback) {
         this.callback = callback;
         if (nfcAdapter != null) {
-            Bundle options = new Bundle();
-            nfcAdapter.enableReaderMode(activity, this, 
-                NfcAdapter.FLAG_READER_NFC_A | NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK, options);
+            nfcAdapter.enableReaderMode(activity, tag -> {
+                IsoDep isoDep = IsoDep.get(tag);
+                if (isoDep != null) {
+                    try {
+                        isoDep.connect();
+                        // 1. Select AID
+                        byte[] selectCommand = {
+                            (byte) 0x00, (byte) 0xA4, (byte) 0x04, (byte) 0x00, (byte) 0x07,
+                            (byte) 0xF0, (byte) 0x39, (byte) 0x41, (byte) 0x48, (byte) 0x14, (byte) 0x81, (byte) 0x00, (byte) 0x00
+                        };
+                        isoDep.transceive(selectCommand);
+                        
+                        // 2. Request Hotspot Info (Sending a dummy "GET_CONFIG" command)
+                        byte[] getCommand = "GET_CONFIG".getBytes(StandardCharsets.UTF_8);
+                        byte[] response = isoDep.transceive(getCommand);
+                        
+                        String result = new String(response, StandardCharsets.UTF_8);
+                        Log.d(TAG, "Received from Seller: " + result);
+                        
+                        // Parse format: SSID:password
+                        if (result.contains(":")) {
+                            String[] parts = result.split(":");
+                            if (this.callback != null) {
+                                this.callback.onHotspotInfoReceived(parts[0], parts[1]);
+                            }
+                        }
+                        
+                        isoDep.close();
+                    } catch (IOException e) {
+                        Log.e(TAG, "NFC Transceive error: " + e.getMessage());
+                        if (this.callback != null) this.callback.onError(e.getMessage());
+                    }
+                }
+            }, NfcAdapter.FLAG_READER_NFC_A | NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK, null);
         }
     }
 
     public void stopReading() {
         if (nfcAdapter != null) {
             nfcAdapter.disableReaderMode(activity);
-        }
-    }
-
-    @Override
-    public void onTagDiscovered(Tag tag) {
-        IsoDep isoDep = IsoDep.get(tag);
-        if (isoDep != null) {
-            try {
-                isoDep.connect();
-                // 1. Select AID
-                byte[] selectCommand = {
-                    (byte) 0x00, (byte) 0xA4, (byte) 0x04, (byte) 0x00, (byte) 0x07,
-                    (byte) 0xF0, (byte) 0x39, (byte) 0x41, (byte) 0x48, (byte) 0x14, (byte) 0x81, (byte) 0x00, (byte) 0x00
-                };
-                byte[] response = isoDep.transceive(selectCommand);
-                
-                // 2. Send Token
-                byte[] tokenCommand = "TOKEN_12345".getBytes(StandardCharsets.UTF_8);
-                response = isoDep.transceive(tokenCommand);
-                
-                String result = new String(response, StandardCharsets.UTF_8);
-                Log.d(TAG, "Response from Seller: " + result);
-                if (callback != null) callback.onTokenSent(result);
-                
-                isoDep.close();
-            } catch (IOException e) {
-                Log.e(TAG, "NFC Transceive error: " + e.getMessage());
-                if (callback != null) callback.onError(e.getMessage());
-            }
         }
     }
 }

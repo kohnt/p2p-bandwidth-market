@@ -1,7 +1,13 @@
 package com.p2p.bandwidthmarket;
 
 import android.Manifest;
+import android.content.Context;
 import android.content.pm.PackageManager;
+import android.net.wifi.WifiNetworkSpecifier;
+import android.net.NetworkRequest;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.os.Build;
 import android.os.Bundle;
 import android.widget.Button;
 import android.widget.TextView;
@@ -15,6 +21,10 @@ import com.p2p.bandwidthmarket.core.HotspotManager;
 import com.p2p.bandwidthmarket.core.NfcReader;
 import com.p2p.bandwidthmarket.core.ProxyServer;
 import com.p2p.bandwidthmarket.core.UsageTracker;
+import com.p2p.bandwidthmarket.core.TokenHceService;
+
+import java.util.ArrayList;
+import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
     private static final int PERMISSION_REQUEST_CODE = 1001;
@@ -46,10 +56,14 @@ public class MainActivity extends AppCompatActivity {
         modeButton.setOnClickListener(v -> toggleMode());
 
         actionButton.setOnClickListener(v -> {
-            if (hotspotManager.isHotspotActive()) {
-                stopHotspot();
+            if (isSellerMode) {
+                if (hotspotManager.isHotspotActive()) {
+                    stopHotspot();
+                } else {
+                    checkPermissionsAndStartHotspot();
+                }
             } else {
-                checkPermissionsAndStartHotspot();
+                startNfcReading();
             }
         });
     }
@@ -70,25 +84,33 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void checkPermissionsAndStartHotspot() {
-        if (isSellerMode) {
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, PERMISSION_REQUEST_CODE);
-            } else {
-                startHotspot();
+        List<String> permissionsNeeded = new ArrayList<>();
+        
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            permissionsNeeded.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        }
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
+                permissionsNeeded.add(Manifest.permission.NEARBY_WIFI_DEVICES);
             }
+        }
+
+        if (!permissionsNeeded.isEmpty()) {
+            ActivityCompat.requestPermissions(this, permissionsNeeded.toArray(new String[0]), PERMISSION_REQUEST_CODE);
         } else {
-            startNfcReading();
+            startHotspot();
         }
     }
 
     private void startNfcReading() {
-        statusText.setText("Waiting for NFC Tag...");
+        statusText.setText("Waiting for Seller's NFC...");
         nfcReader.startReading(new NfcReader.ReaderCallback() {
             @Override
-            public void onTokenSent(String response) {
+            public void onHotspotInfoReceived(String ssid, String passphrase) {
                 runOnUiThread(() -> {
-                    statusText.setText("Token Sent! Response: " + response);
-                    Toast.makeText(MainActivity.this, "Transaction Successful", Toast.LENGTH_SHORT).show();
+                    statusText.setText("Connecting to: " + ssid);
+                    connectToWifi(ssid, passphrase);
                 });
             }
 
@@ -99,12 +121,42 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    private void connectToWifi(String ssid, String passphrase) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            WifiNetworkSpecifier specifier = new WifiNetworkSpecifier.Builder()
+                    .setSsid(ssid)
+                    .setWpa2Passphrase(passphrase)
+                    .build();
+
+            NetworkRequest request = new NetworkRequest.Builder()
+                    .addTransportType(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+                    .setNetworkSpecifier(specifier)
+                    .build();
+
+            ConnectivityManager connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            connectivityManager.requestNetwork(request, new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(@NonNull Network network) {
+                    super.onAvailable(network);
+                    connectivityManager.bindProcessToNetwork(network);
+                    runOnUiThread(() -> {
+                        statusText.setText("Connected to Hotspot!");
+                        Toast.makeText(MainActivity.this, "WiFi Connected", Toast.LENGTH_SHORT).show();
+                    });
+                }
+            });
+        } else {
+            runOnUiThread(() -> Toast.makeText(this, "Manual WiFi connection required on this Android version", Toast.LENGTH_LONG).show());
+        }
+    }
+
     private void startHotspot() {
         statusText.setText("Starting Hotspot...");
         hotspotManager.startHotspot(new HotspotManager.HotspotCallback() {
             @Override
             public void onStarted(String ssid, String passphrase) {
-                statusText.setText("Hotspot Active\nSSID: " + ssid + "\nPass: " + passphrase);
+                TokenHceService.setHotspotConfig(ssid, passphrase);
+                statusText.setText("Hotspot Active\nSSID: " + ssid + "\nPass: " + passphrase + "\nWaiting for Buyer Tap...");
                 actionButton.setText("Stop Hotspot");
                 startProxy();
             }
@@ -119,7 +171,6 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onFailure(int errorCode) {
                 statusText.setText("Failed to start hotspot (" + errorCode + ")");
-                Toast.makeText(MainActivity.this, "Hotspot Error: " + errorCode, Toast.LENGTH_SHORT).show();
             }
         });
     }
@@ -147,8 +198,19 @@ public class MainActivity extends AppCompatActivity {
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == PERMISSION_REQUEST_CODE && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            startHotspot();
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+            boolean allGranted = true;
+            for (int result : grantResults) {
+                if (result != PackageManager.PERMISSION_GRANTED) {
+                    allGranted = false;
+                    break;
+                }
+            }
+            if (allGranted) {
+                startHotspot();
+            } else {
+                Toast.makeText(this, "Permissions required to start hotspot", Toast.LENGTH_SHORT).show();
+            }
         }
     }
 }

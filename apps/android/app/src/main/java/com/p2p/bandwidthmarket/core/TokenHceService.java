@@ -9,34 +9,36 @@ import java.util.Arrays;
 
 public class TokenHceService extends HostApduService {
     private static final String TAG = "TokenHceService";
-    
-    // Command APDU for SELECT AID
-    private static final byte[] SELECT_AID_COMMAND = {
-        (byte) 0x00, // CLA
-        (byte) 0xA4, // INS
-        (byte) 0x04, // P1
-        (byte) 0x00, // P2
-        (byte) 0x07, // Lc (AID length)
-        (byte) 0xF0, (byte) 0x39, (byte) 0x41, (byte) 0x48, (byte) 0x14, (byte) 0x81, (byte) 0x00, // AID: F0394148148100
-        (byte) 0x00  // Le
-    };
+    private static String currentConfig = "OFFLINE:OFFLINE";
 
-    private static final byte[] SELECT_RESPONSE_OK = {(byte) 0x90, (byte) 0x00};
-    private static final byte[] SELECT_RESPONSE_FAIL = {(byte) 0x6A, (byte) 0x82};
+    public static void setHotspotConfig(String ssid, String passphrase) {
+        currentConfig = ssid + ":" + passphrase;
+    }
+
+    private static final byte[] SELECT_AID_COMMAND = {
+        (byte) 0x00, (byte) 0xA4, (byte) 0x04, (byte) 0x00, (byte) 0x07,
+        (byte) 0xF0, (byte) 0x39, (byte) 0x41, (byte) 0x48, (byte) 0x14, (byte) 0x81, (byte) 0x00, (byte) 0x00
+    };
 
     @Override
     public byte[] processCommandApdu(byte[] commandApdu, Bundle extras) {
-        if (Arrays.equals(SELECT_AID_COMMAND, commandApdu)) {
+        if (isSelectAid(commandApdu)) {
             Log.d(TAG, "AID Selected");
-            return SELECT_RESPONSE_OK;
+            return new byte[]{(byte) 0x90, (byte) 0x00};
         }
 
-        // Handle incoming token data
         String message = new String(commandApdu, StandardCharsets.UTF_8);
-        Log.d(TAG, "Received APDU: " + message);
-        
-        // Return a response confirming receipt
-        return "TOKEN_RECEIVED".getBytes(StandardCharsets.UTF_8);
+        if ("GET_CONFIG".equals(message)) {
+            Log.d(TAG, "Sending Config: " + currentConfig);
+            return currentConfig.getBytes(StandardCharsets.UTF_8);
+        }
+
+        return "UNKNOWN_COMMAND".getBytes(StandardCharsets.UTF_8);
+    }
+
+    private boolean isSelectAid(byte[] commandApdu) {
+        return commandApdu.length >= SELECT_AID_COMMAND.length &&
+                Arrays.equals(Arrays.copyOf(commandApdu, SELECT_AID_COMMAND.length), SELECT_AID_COMMAND);
     }
 
     @Override
