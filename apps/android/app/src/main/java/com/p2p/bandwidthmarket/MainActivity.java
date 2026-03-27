@@ -107,10 +107,11 @@ public class MainActivity extends AppCompatActivity {
         statusText.setText("Waiting for Seller's NFC...");
         nfcReader.startReading(new NfcReader.ReaderCallback() {
             @Override
-            public void onHotspotInfoReceived(String ssid, String passphrase) {
+            public void onHotspotInfoReceived(String ssid, String passphrase, String proxyIp) {
                 runOnUiThread(() -> {
-                    statusText.setText("Connecting to: " + ssid);
+                    statusText.setText("Connecting to: " + ssid + "\nProxy: " + proxyIp);
                     connectToWifi(ssid, passphrase);
+                    // In a real app, you'd also save the proxyIp to use in the system settings or a browser.
                 });
             }
 
@@ -155,8 +156,9 @@ public class MainActivity extends AppCompatActivity {
         hotspotManager.startHotspot(new HotspotManager.HotspotCallback() {
             @Override
             public void onStarted(String ssid, String passphrase) {
-                TokenHceService.setHotspotConfig(ssid, passphrase);
-                statusText.setText("Hotspot Active\nSSID: " + ssid + "\nPass: " + passphrase + "\nWaiting for Buyer Tap...");
+                String ip = hotspotManager.getIpAddress();
+                TokenHceService.setHotspotConfig(ssid, passphrase, ip);
+                statusText.setText("Hotspot Active\nSSID: " + ssid + "\nPass: " + passphrase + "\nProxy IP: " + ip + "\nWaiting for Buyer Tap...");
                 actionButton.setText("Stop Hotspot");
                 startProxy();
             }

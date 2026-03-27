@@ -9,10 +9,10 @@ import java.util.Arrays;
 
 public class TokenHceService extends HostApduService {
     private static final String TAG = "TokenHceService";
-    private static String currentConfig = "OFFLINE:OFFLINE";
+    private static String currentConfig = "OFFLINE:OFFLINE:0.0.0.0";
 
-    public static void setHotspotConfig(String ssid, String passphrase) {
-        currentConfig = ssid + ":" + passphrase;
+    public static void setHotspotConfig(String ssid, String passphrase, String ip) {
+        currentConfig = ssid + ":" + passphrase + ":" + ip;
     }
 
     private static final byte[] SELECT_AID_COMMAND = {

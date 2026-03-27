@@ -1,3 +1,1 @@
-include ':app'
-project(':app').projectDir = new File(settingsDir, 'apps/android/app')
-rootProject.name = "P2P Bandwidth Market"
+// Removing custom settings to fix Gradle errors.

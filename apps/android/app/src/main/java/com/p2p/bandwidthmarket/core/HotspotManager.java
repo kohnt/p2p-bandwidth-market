@@ -12,6 +12,13 @@ import android.util.Log;
 
 import androidx.annotation.NonNull;
 
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.util.Collections;
+import java.util.Enumeration;
+import java.util.List;
+
 public class HotspotManager {
     private static final String TAG = "HotspotManager";
     private final WifiManager wifiManager;
@@ -83,5 +90,30 @@ public class HotspotManager {
 
     public boolean isHotspotActive() {
         return hotspotReservation != null;
+    }
+
+    /**
+     * Gets the IP address of the Hotspot interface (usually starting with "ap" or "wlan").
+     */
+    public String getIpAddress() {
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface intf = interfaces.nextElement();
+                // LocalOnlyHotspot interfaces usually contain "ap" (e.g., "ap0") or "wlan"
+                if (intf.getName().contains("ap") || intf.getName().contains("wlan")) {
+                    Enumeration<InetAddress> addrs = intf.getInetAddresses();
+                    while (addrs.hasMoreElements()) {
+                        InetAddress addr = addrs.nextElement();
+                        if (!addr.isLoopbackAddress() && addr instanceof Inet4Address) {
+                            return addr.getHostAddress();
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting IP: " + e.getMessage());
+        }
+        return "192.168.43.1"; // Most common default
     }
 }
