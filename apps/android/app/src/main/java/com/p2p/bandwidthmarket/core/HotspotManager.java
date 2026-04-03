@@ -41,49 +41,54 @@ public class HotspotManager {
             return;
         }
 
-        wifiManager.startLocalOnlyHotspot(new WifiManager.LocalOnlyHotspotCallback() {
-            @Override
-            public void onStarted(WifiManager.LocalOnlyHotspotReservation reservation) {
-                super.onStarted(reservation);
-                hotspotReservation = reservation;
-                
-                String ssid;
-                String passphrase;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            wifiManager.startLocalOnlyHotspot(new WifiManager.LocalOnlyHotspotCallback() {
+                @Override
+                public void onStarted(WifiManager.LocalOnlyHotspotReservation reservation) {
+                    super.onStarted(reservation);
+                    hotspotReservation = reservation;
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    SoftApConfiguration config = reservation.getSoftApConfiguration();
-                    ssid = config.getSsid();
-                    passphrase = config.getPassphrase();
-                } else {
-                    WifiConfiguration config = reservation.getWifiConfiguration();
-                    ssid = config.SSID;
-                    passphrase = config.preSharedKey;
+                    String ssid;
+                    String passphrase;
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        SoftApConfiguration config = reservation.getSoftApConfiguration();
+                        ssid = config.getSsid();
+                        passphrase = config.getPassphrase();
+                    } else {
+                        WifiConfiguration config = reservation.getWifiConfiguration();
+                        assert config != null;
+                        ssid = config.SSID;
+                        passphrase = config.preSharedKey;
+                    }
+
+                    Log.d(TAG, "Hotspot started: " + ssid);
+                    callback.onStarted(ssid, passphrase);
                 }
 
-                Log.d(TAG, "Hotspot started: " + ssid);
-                callback.onStarted(ssid, passphrase);
-            }
+                @Override
+                public void onStopped() {
+                    super.onStopped();
+                    hotspotReservation = null;
+                    Log.d(TAG, "Hotspot stopped");
+                    callback.onStopped();
+                }
 
-            @Override
-            public void onStopped() {
-                super.onStopped();
-                hotspotReservation = null;
-                Log.d(TAG, "Hotspot stopped");
-                callback.onStopped();
-            }
-
-            @Override
-            public void onFailed(int reason) {
-                super.onFailed(reason);
-                Log.e(TAG, "Hotspot failed: " + reason);
-                callback.onFailure(reason);
-            }
-        }, new Handler(Looper.getMainLooper()));
+                @Override
+                public void onFailed(int reason) {
+                    super.onFailed(reason);
+                    Log.e(TAG, "Hotspot failed: " + reason);
+                    callback.onFailure(reason);
+                }
+            }, new Handler(Looper.getMainLooper()));
+        }
     }
 
     public void stopHotspot() {
         if (hotspotReservation != null) {
-            hotspotReservation.close();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                hotspotReservation.close();
+            }
             hotspotReservation = null;
         }
     }
@@ -96,17 +101,23 @@ public class HotspotManager {
      * Gets the IP address of the Hotspot interface (usually starting with "ap" or "wlan").
      */
     public String getIpAddress() {
+        String wlanFallback = null;
         try {
             Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
             while (interfaces.hasMoreElements()) {
                 NetworkInterface intf = interfaces.nextElement();
-                // LocalOnlyHotspot interfaces usually contain "ap" (e.g., "ap0") or "wlan"
-                if (intf.getName().contains("ap") || intf.getName().contains("wlan")) {
-                    Enumeration<InetAddress> addrs = intf.getInetAddresses();
-                    while (addrs.hasMoreElements()) {
-                        InetAddress addr = addrs.nextElement();
-                        if (!addr.isLoopbackAddress() && addr instanceof Inet4Address) {
-                            return addr.getHostAddress();
+                String name = intf.getName().toLowerCase();
+                Enumeration<InetAddress> addrs = intf.getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    InetAddress addr = addrs.nextElement();
+                    if (!addr.isLoopbackAddress() && addr instanceof Inet4Address) {
+                        String ip = addr.getHostAddress();
+                        if (name.startsWith("ap")) {
+                            // ap0, ap1, etc. — this is always the hotspot interface
+                            Log.d(TAG, "Found hotspot IP on " + name + ": " + ip);
+                            return ip;
+                        } else if ((name.startsWith("wlan") || name.startsWith("swlan")) && wlanFallback == null) {
+                            wlanFallback = ip; // Keep as fallback only
                         }
                     }
                 }
@@ -114,6 +125,8 @@ public class HotspotManager {
         } catch (Exception e) {
             Log.e(TAG, "Error getting IP: " + e.getMessage());
         }
-        return "192.168.43.1"; // Most common default
+        String result = wlanFallback != null ? wlanFallback : "192.168.43.1";
+        Log.d(TAG, "Hotspot IP fallback: " + result);
+        return result;
     }
 }

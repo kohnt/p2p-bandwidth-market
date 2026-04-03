@@ -49,6 +49,38 @@
         app:layout_constraintRight_toRightOf="parent"
         app:layout_constraintTop_toBottomOf="@+id/button_hotspot" />
 
+    <TextView
+        android:id="@+id/textView_throughput"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Speed: 0 KB/s"
+        android:textColor="#4CAF50"
+        app:layout_constraintLeft_toLeftOf="parent"
+        app:layout_constraintRight_toRightOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/textView_usage" />
+
+    <TextView
+        android:id="@+id/textView_quota"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Quota: Unlimited"
+        app:layout_constraintLeft_toLeftOf="parent"
+        app:layout_constraintRight_toRightOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/textView_throughput" />
+
+    <Button
+        android:id="@+id/button_purchase"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="Purchase 10MB Token"
+        android:visibility="gone"
+        app:layout_constraintLeft_toLeftOf="parent"
+        app:layout_constraintRight_toRightOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/textView_quota" />
+
     <Button
         android:id="@+id/button_mode"
         style="@style/Widget.MaterialComponents.Button.OutlinedButton"
@@ -58,6 +90,6 @@
         android:text="Switch to Buyer Mode"
         app:layout_constraintLeft_toLeftOf="parent"
         app:layout_constraintRight_toRightOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/textView_usage" />
+        app:layout_constraintTop_toBottomOf="@+id/button_purchase" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

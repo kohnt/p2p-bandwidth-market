@@ -27,16 +27,23 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
-    private static final int PERMISSION_REQUEST_CODE = 1001;
     private HotspotManager hotspotManager;
     private ProxyServer proxyServer;
     private UsageTracker usageTracker;
     private NfcReader nfcReader;
+    private com.p2p.bandwidthmarket.core.SessionController sessionController;
     private TextView statusText;
     private TextView usageText;
+    private TextView throughputText;
+    private TextView quotaText;
     private Button actionButton;
     private Button modeButton;
+    private Button purchaseButton;
     private boolean isSellerMode = true;
+    private String currentProxyIp;
+    private android.net.Network currentNetwork;
+    private static final int VPN_REQUEST_CODE = 1002;
+    private static final int PERMISSION_REQUEST_CODE = 1001;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -47,13 +54,18 @@ public class MainActivity extends AppCompatActivity {
         proxyServer = new ProxyServer(1080);
         usageTracker = new UsageTracker();
         nfcReader = new NfcReader(this);
+        sessionController = new com.p2p.bandwidthmarket.core.SessionController(proxyServer, usageTracker);
         
         statusText = findViewById(R.id.textView2);
         usageText = findViewById(R.id.textView_usage);
+        throughputText = findViewById(R.id.textView_throughput);
+        quotaText = findViewById(R.id.textView_quota);
         actionButton = findViewById(R.id.button_hotspot);
         modeButton = findViewById(R.id.button_mode);
+        purchaseButton = findViewById(R.id.button_purchase);
 
         modeButton.setOnClickListener(v -> toggleMode());
+        purchaseButton.setOnClickListener(v -> simulatePurchase());
 
         actionButton.setOnClickListener(v -> {
             if (isSellerMode) {
@@ -66,6 +78,8 @@ public class MainActivity extends AppCompatActivity {
                 startNfcReading();
             }
         });
+        
+        startMetricsUpdater();
     }
 
     private void toggleMode() {
@@ -74,12 +88,69 @@ public class MainActivity extends AppCompatActivity {
             modeButton.setText("Switch to Buyer Mode");
             actionButton.setText("Start Hotspot");
             statusText.setText("Seller Mode Active");
+            purchaseButton.setVisibility(android.view.View.GONE);
             nfcReader.stopReading();
         } else {
             modeButton.setText("Switch to Seller Mode");
             actionButton.setText("Scan NFC to Buy");
             statusText.setText("Buyer Mode Active");
+            purchaseButton.setVisibility(android.view.View.VISIBLE);
             stopHotspot();
+        }
+    }
+
+    private void startMetricsUpdater() {
+        android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+        handler.post(new Runnable() {
+            long lastBytes = 0;
+            @Override
+            public void run() {
+                long currentBytes = usageTracker.getBytesUsed();
+                long diff = currentBytes - lastBytes;
+                lastBytes = currentBytes;
+                
+                throughputText.setText(String.format("Speed: %.1f KB/s", diff / 1024.0));
+                usageText.setText("Usage: " + usageTracker.getFormattedUsage());
+                
+                handler.postDelayed(this, 1000);
+            }
+        });
+    }
+
+    private void simulatePurchase() {
+        statusText.setText("Purchasing 10MB Token via EC2...");
+        // Simulation of "Stage 0" Bootstrap
+        // In reality, this would be an HTTP request to EC2 via the proxy
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+            statusText.setText("Token Minted! Upgrading Proxy...");
+            // Notify seller to authorize our IP
+            proxyServer.authorizeClient("10.0.0.2"); // TUN local address
+            proxyServer.setPreAuthMode(false); // For demo, let everyone through
+            sessionController.startSession(10 * 1024 * 1024); // 10MB
+            quotaText.setText("Quota: 10 MB");
+            Toast.makeText(this, "Purchase Successful!", Toast.LENGTH_SHORT).show();
+            startVpn();
+        }, 2000);
+    }
+
+    private void startVpn() {
+        android.content.Intent intent = android.net.VpnService.prepare(this);
+        if (intent != null) {
+            startActivityForResult(intent, VPN_REQUEST_CODE);
+        } else {
+            onActivityResult(VPN_REQUEST_CODE, RESULT_OK, null);
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == VPN_REQUEST_CODE && resultCode == RESULT_OK) {
+            android.content.Intent intent = new android.content.Intent(this, com.p2p.bandwidthmarket.core.MarketVpnService.class);
+            intent.putExtra("PROXY_HOST", currentProxyIp != null ? currentProxyIp : "192.168.43.1");
+            intent.putExtra("PROXY_PORT", 1080);
+            startService(intent);
+            statusText.setText("VPN Active - Tunneling through P2P");
         }
     }
 
@@ -109,9 +180,9 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onHotspotInfoReceived(String ssid, String passphrase, String proxyIp) {
                 runOnUiThread(() -> {
-                    statusText.setText("Connecting to: " + ssid + "\nProxy: " + proxyIp);
+                    currentProxyIp = proxyIp;
+                    statusText.setText("Found Seller: " + ssid + "\nProxy: " + proxyIp + "\nTap Purchase to continue");
                     connectToWifi(ssid, passphrase);
-                    // In a real app, you'd also save the proxyIp to use in the system settings or a browser.
                 });
             }
 
@@ -139,9 +210,11 @@ public class MainActivity extends AppCompatActivity {
                 @Override
                 public void onAvailable(@NonNull Network network) {
                     super.onAvailable(network);
+                    currentNetwork = network;
+                    com.p2p.bandwidthmarket.core.MarketVpnService.setUnderlyingNetwork(network);
                     connectivityManager.bindProcessToNetwork(network);
                     runOnUiThread(() -> {
-                        statusText.setText("Connected to Hotspot!");
+                        statusText.setText("Connected to Hotspot! (Pre-Auth Restricted)");
                         Toast.makeText(MainActivity.this, "WiFi Connected", Toast.LENGTH_SHORT).show();
                     });
                 }
@@ -179,15 +252,15 @@ public class MainActivity extends AppCompatActivity {
 
     private void startProxy() {
         usageTracker.reset();
+        proxyServer.setPreAuthMode(false); // WiFi password is the gate for now
         proxyServer.start(bytes -> runOnUiThread(() -> {
             usageTracker.addBytes(bytes);
-            usageText.setText("Usage: " + usageTracker.getFormattedUsage());
         }));
     }
 
     private void stopProxy() {
         proxyServer.stop();
-        usageText.setText("Usage: 0 B");
+        sessionController.terminateSession();
     }
 
     private void stopHotspot() {

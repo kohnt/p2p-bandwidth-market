@@ -23,4 +23,8 @@ public class UsageTracker {
         char pre = "KMGTPE".charAt(exp - 1);
         return String.format(Locale.US, "%.1f %cB", bytesUsed / Math.pow(1024, exp), pre);
     }
+
+    public boolean isLimitExceeded(long limit) {
+        return bytesUsed >= limit;
+    }
 }
