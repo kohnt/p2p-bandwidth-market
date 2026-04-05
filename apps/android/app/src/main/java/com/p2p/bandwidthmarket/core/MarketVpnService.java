@@ -194,7 +194,9 @@ public class MarketVpnService extends VpnService implements Runnable {
                     (byte) 0x12,          // SYN + ACK
                     null
                 );
-                out.write(synAck);
+                synchronized (out) {
+                    out.write(synAck);
+                }
                 state.ack += 1; // SYN consumes one sequence number on our side
                 Log.d(TAG, "Sent SYN-ACK for " + key);
             }
@@ -211,7 +213,9 @@ public class MarketVpnService extends VpnService implements Runnable {
                             (byte) 0x10,
                             data
                         );
-                        out.write(response);
+                        synchronized (out) {
+                            out.write(response);
+                        }
                         finalState.ack += length;
                     } catch (IOException e) {
                         Log.e(TAG, "Error writing to TUN: " + e.getMessage());
@@ -232,6 +236,17 @@ public class MarketVpnService extends VpnService implements Runnable {
             buffer.get(data);
             state.relay.send(data, info.payloadLength);
             state.seq += info.payloadLength;
+            // ACK the client's data immediately so it stops retransmitting while
+            // waiting for the upstream response (e.g. TLS handshake latency).
+            byte[] ackPkt = PacketUtils.createTcpPacket(
+                state.dstAddr, state.dstPort,
+                state.srcAddr, state.srcPort,
+                state.ack, state.seq,
+                (byte) 0x10, null
+            );
+            synchronized (out) {
+                out.write(ackPkt);
+            }
         }
     }
 
@@ -253,7 +268,9 @@ public class MarketVpnService extends VpnService implements Runnable {
                     "10.0.0.2", info.sourcePort,
                     dnsResponse
                 );
-                out.write(packet);
+                synchronized (out) {
+                    out.write(packet);
+                }
                 Log.d(TAG, "DNS: " + domain + " -> " + fakeIp);
             }
         }
