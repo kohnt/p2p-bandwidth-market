@@ -15,6 +15,8 @@ public class IpPacketParser {
         public int sourcePort;
         public int payloadOffset;
         public int payloadLength;
+        public byte tcpFlags;  // TCP flags byte (offset 13 in TCP header)
+        public long tcpSeq;    // TCP sequence number from the packet
     }
 
     public static PacketInfo parse(ByteBuffer buffer, int length) {
@@ -49,8 +51,10 @@ public class IpPacketParser {
             buffer.position(ihl);
             info.sourcePort = buffer.getShort() & 0xFFFF;
             info.destinationPort = buffer.getShort() & 0xFFFF;
+            info.tcpSeq = buffer.getInt() & 0xFFFFFFFFL; // sequence number (bytes ihl+4..ihl+7)
             // TCP header length is 4 bits in byte 12
             int dataOffset = ((buffer.get(ihl + 12) >> 4) & 0x0F) * 4;
+            info.tcpFlags = buffer.get(ihl + 13);
             info.payloadOffset = ihl + dataOffset;
             info.payloadLength = length - info.payloadOffset;
         } else if (info.protocol == 17) { // UDP

@@ -42,6 +42,7 @@ public class MainActivity extends AppCompatActivity {
     private boolean isSellerMode = true;
     private String currentProxyIp;
     private android.net.Network currentNetwork;
+    private volatile boolean hotspotNetworkCaptured = false;
     private static final int VPN_REQUEST_CODE = 1002;
     private static final int PERMISSION_REQUEST_CODE = 1001;
 
@@ -51,7 +52,7 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         hotspotManager = new HotspotManager(this);
-        proxyServer = new ProxyServer(1080);
+        proxyServer = new ProxyServer(8080);
         usageTracker = new UsageTracker();
         nfcReader = new NfcReader(this);
         sessionController = new com.p2p.bandwidthmarket.core.SessionController(proxyServer, usageTracker);
@@ -80,6 +81,25 @@ public class MainActivity extends AppCompatActivity {
         });
         
         startMetricsUpdater();
+        startWifiMonitor();
+    }
+
+    private void startWifiMonitor() {
+        ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        NetworkRequest req = new NetworkRequest.Builder()
+                .addTransportType(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+                .build();
+        cm.registerNetworkCallback(req, new ConnectivityManager.NetworkCallback() {
+            @Override
+            public void onAvailable(@NonNull Network network) {
+                if (!hotspotNetworkCaptured) {
+                    currentNetwork = network;
+                    com.p2p.bandwidthmarket.core.MarketVpnService.setUnderlyingNetwork(network);
+                    cm.bindProcessToNetwork(network);
+                    android.util.Log.i("MainActivity", "WiFi network captured: " + network);
+                }
+            }
+        });
     }
 
     private void toggleMode() {
@@ -148,7 +168,7 @@ public class MainActivity extends AppCompatActivity {
         if (requestCode == VPN_REQUEST_CODE && resultCode == RESULT_OK) {
             android.content.Intent intent = new android.content.Intent(this, com.p2p.bandwidthmarket.core.MarketVpnService.class);
             intent.putExtra("PROXY_HOST", currentProxyIp != null ? currentProxyIp : "192.168.43.1");
-            intent.putExtra("PROXY_PORT", 1080);
+            intent.putExtra("PROXY_PORT", 8080);
             startService(intent);
             statusText.setText("VPN Active - Tunneling through P2P");
         }
@@ -175,14 +195,17 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void startNfcReading() {
+        hotspotNetworkCaptured = false;
         statusText.setText("Waiting for Seller's NFC...");
         nfcReader.startReading(new NfcReader.ReaderCallback() {
             @Override
             public void onHotspotInfoReceived(String ssid, String passphrase, String proxyIp) {
                 runOnUiThread(() -> {
                     currentProxyIp = proxyIp;
-                    statusText.setText("Found Seller: " + ssid + "\nProxy: " + proxyIp + "\nTap Purchase to continue");
-                    connectToWifi(ssid, passphrase);
+                    statusText.setText("Found Seller!\nSSID: " + ssid + "\nConnecting to hotspot...");
+                    // Delay so activity is fully resumed before showing the system WiFi dialog
+                    new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() ->
+                        connectToWifi(ssid, passphrase), 1000);
                 });
             }
 
@@ -195,32 +218,13 @@ public class MainActivity extends AppCompatActivity {
 
     private void connectToWifi(String ssid, String passphrase) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            WifiNetworkSpecifier specifier = new WifiNetworkSpecifier.Builder()
+            android.net.wifi.WifiManager wifiManager = (android.net.wifi.WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            android.net.wifi.WifiNetworkSuggestion suggestion = new android.net.wifi.WifiNetworkSuggestion.Builder()
                     .setSsid(ssid)
                     .setWpa2Passphrase(passphrase)
                     .build();
-
-            NetworkRequest request = new NetworkRequest.Builder()
-                    .addTransportType(android.net.NetworkCapabilities.TRANSPORT_WIFI)
-                    .setNetworkSpecifier(specifier)
-                    .build();
-
-            ConnectivityManager connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-            connectivityManager.requestNetwork(request, new ConnectivityManager.NetworkCallback() {
-                @Override
-                public void onAvailable(@NonNull Network network) {
-                    super.onAvailable(network);
-                    currentNetwork = network;
-                    com.p2p.bandwidthmarket.core.MarketVpnService.setUnderlyingNetwork(network);
-                    connectivityManager.bindProcessToNetwork(network);
-                    runOnUiThread(() -> {
-                        statusText.setText("Connected to Hotspot! (Pre-Auth Restricted)");
-                        Toast.makeText(MainActivity.this, "WiFi Connected", Toast.LENGTH_SHORT).show();
-                    });
-                }
-            });
-        } else {
-            runOnUiThread(() -> Toast.makeText(this, "Manual WiFi connection required on this Android version", Toast.LENGTH_LONG).show());
+            wifiManager.addNetworkSuggestions(java.util.Arrays.asList(suggestion));
+            runOnUiThread(() -> statusText.setText("Connecting to hotspot...\nIf not auto-connected, join \"" + ssid + "\" in WiFi Settings, then tap Purchase"));
         }
     }
 
@@ -229,11 +233,16 @@ public class MainActivity extends AppCompatActivity {
         hotspotManager.startHotspot(new HotspotManager.HotspotCallback() {
             @Override
             public void onStarted(String ssid, String passphrase) {
-                String ip = hotspotManager.getIpAddress();
-                TokenHceService.setHotspotConfig(ssid, passphrase, ip);
-                statusText.setText("Hotspot Active\nSSID: " + ssid + "\nPass: " + passphrase + "\nProxy IP: " + ip + "\nWaiting for Buyer Tap...");
+                statusText.setText("Hotspot starting, detecting IP...");
                 actionButton.setText("Stop Hotspot");
                 startProxy();
+                // Register manager so NFC tap always does a fresh IP scan
+                TokenHceService.setHotspotConfig(ssid, passphrase, hotspotManager);
+                // Still delay UI update so the displayed IP has time to appear
+                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                    String ip = hotspotManager.getIpAddress();
+                    statusText.setText("Hotspot Active\nSSID: " + ssid + "\nPass: " + passphrase + "\nProxy IP: " + ip + "\nWaiting for Buyer Tap...");
+                }, 2000);
             }
 
             @Override

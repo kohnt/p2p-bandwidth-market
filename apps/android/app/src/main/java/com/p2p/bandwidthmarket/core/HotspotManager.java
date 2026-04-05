@@ -101,7 +101,11 @@ public class HotspotManager {
      * Gets the IP address of the Hotspot interface (usually starting with "ap" or "wlan").
      */
     public String getIpAddress() {
-        String wlanFallback = null;
+        String apIp = null;           // ap0, softap0 — dedicated hotspot interface
+        String hotspotSubnetIp = null; // 192.168.49.x or 192.168.43.x — known hotspot subnets
+        String gatewayIp = null;      // any non-cellular .1 address — hotspot gateway heuristic
+        String wlanFallback = null;   // seller's upstream WiFi IP — last resort
+
         try {
             Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
             while (interfaces.hasMoreElements()) {
@@ -110,23 +114,33 @@ public class HotspotManager {
                 Enumeration<InetAddress> addrs = intf.getInetAddresses();
                 while (addrs.hasMoreElements()) {
                     InetAddress addr = addrs.nextElement();
-                    if (!addr.isLoopbackAddress() && addr instanceof Inet4Address) {
-                        String ip = addr.getHostAddress();
-                        if (name.startsWith("ap")) {
-                            // ap0, ap1, etc. — this is always the hotspot interface
-                            Log.d(TAG, "Found hotspot IP on " + name + ": " + ip);
-                            return ip;
-                        } else if ((name.startsWith("wlan") || name.startsWith("swlan")) && wlanFallback == null) {
-                            wlanFallback = ip; // Keep as fallback only
-                        }
+                    Log.d(TAG, "Interface " + name + " → " + addr.getHostAddress());
+                    if (addr.isLoopbackAddress() || !(addr instanceof Inet4Address)) continue;
+                    String ip = addr.getHostAddress();
+                    if (name.startsWith("ap") || name.startsWith("softap") || name.startsWith("wlan_ap")) {
+                        apIp = ip;
+                    } else if (ip.startsWith("192.168.49.") || ip.startsWith("192.168.43.")) {
+                        hotspotSubnetIp = ip;
+                    } else if (!name.startsWith("wlan") && !name.startsWith("swlan")
+                            && !name.startsWith("rmnet") && !name.startsWith("dummy")
+                            && ip.endsWith(".1")) {
+                        // Hotspot gateways are almost always the .1 of their subnet.
+                        // This catches Huawei/OEM devices that use non-standard interface names.
+                        gatewayIp = ip;
+                    } else if ((name.startsWith("wlan") || name.startsWith("swlan")) && wlanFallback == null) {
+                        wlanFallback = ip;
                     }
                 }
             }
         } catch (Exception e) {
             Log.e(TAG, "Error getting IP: " + e.getMessage());
         }
-        String result = wlanFallback != null ? wlanFallback : "192.168.43.1";
-        Log.d(TAG, "Hotspot IP fallback: " + result);
-        return result;
+
+        if (apIp != null) { Log.i(TAG, "Hotspot IP (ap iface): " + apIp); return apIp; }
+        if (hotspotSubnetIp != null) { Log.i(TAG, "Hotspot IP (subnet match): " + hotspotSubnetIp); return hotspotSubnetIp; }
+        if (gatewayIp != null) { Log.i(TAG, "Hotspot IP (gateway heuristic): " + gatewayIp); return gatewayIp; }
+        if (wlanFallback != null) { Log.i(TAG, "Hotspot IP (wlan fallback): " + wlanFallback); return wlanFallback; }
+        Log.w(TAG, "Hotspot IP: using hardcoded default 192.168.49.1");
+        return "192.168.49.1";
     }
 }

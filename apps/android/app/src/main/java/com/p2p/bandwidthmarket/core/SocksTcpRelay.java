@@ -53,14 +53,18 @@ public class SocksTcpRelay {
         executor.execute(() -> {
             try {
                 socket = new Socket();
+                socket.setSoTimeout(30000); // 30s read timeout — prevents blocking forever
                 if (protector != null) protector.protect(socket);
                 socket.connect(new InetSocketAddress(proxyHost, proxyPort), 5000);
                 in = socket.getInputStream();
                 out = socket.getOutputStream();
+                Log.d(TAG, "TCP connected to proxy " + proxyHost + ":" + proxyPort + " for " + targetHost + ":" + targetPort);
 
                 if (performSocks5Handshake()) {
+                    Log.i(TAG, "SOCKS5 handshake OK → " + targetHost + ":" + targetPort);
                     startRelaying();
                 } else {
+                    Log.e(TAG, "SOCKS5 handshake FAILED for " + targetHost + ":" + targetPort);
                     close();
                 }
             } catch (IOException e) {
@@ -103,19 +107,25 @@ public class SocksTcpRelay {
     }
 
     private void startRelaying() {
-        executor.execute(() -> {
+        // Use a dedicated thread — not the shared executor — so the blocking read loop
+        // doesn't starve send() tasks that are queued on the same executor.
+        Thread reader = new Thread(() -> {
             byte[] buffer = new byte[16384];
             try {
                 int length;
                 while ((length = in.read(buffer)) != -1) {
-                    if (callback != null) callback.onDataReceived(buffer, length);
+                    // Copy only the bytes actually read — caller must not use buffer.length
+                    byte[] chunk = java.util.Arrays.copyOf(buffer, length);
+                    if (callback != null) callback.onDataReceived(chunk, length);
                 }
             } catch (IOException e) {
                 Log.d(TAG, "Relay closed: " + e.getMessage());
             } finally {
                 close();
             }
-        });
+        }, "relay-reader");
+        reader.setDaemon(true);
+        reader.start();
     }
 
     public void send(byte[] data, int length) {

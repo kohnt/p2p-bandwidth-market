@@ -1,7 +1,9 @@
 package com.p2p.bandwidthmarket.core;
 
 import android.content.Intent;
+import android.net.ConnectivityManager;
 import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.VpnService;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
@@ -10,24 +12,26 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * MarketVpnService intercepts device traffic and forwards it to a SOCKS5 proxy.
  */
 public class MarketVpnService extends VpnService implements Runnable {
     private static final String TAG = "MarketVpnService";
+    private static final long FAILED_SESSION_COOLDOWN_MS = 10_000; // 10 seconds before retrying a dead flow
+
     private Thread thread;
     private ParcelFileDescriptor vpnInterface;
     private boolean running = false;
     private String proxyHost = "127.0.0.1";
-    private int proxyPort = 1080;
+    private int proxyPort = 8080;
     private static volatile Network underlyingNetwork;
 
     public static void setUnderlyingNetwork(Network network) {
         underlyingNetwork = network;
-        Log.i("MarketVpnService", "Underlying network set: " + network);
+        Log.i(TAG, "Underlying network set: " + network);
     }
 
     @Override
@@ -40,7 +44,7 @@ public class MarketVpnService extends VpnService implements Runnable {
         if (intent != null) {
             proxyHost = intent.getStringExtra("PROXY_HOST");
             proxyPort = intent.getIntExtra("PROXY_PORT", 1080);
-            Log.i(TAG, "Underlying network at start: " + underlyingNetwork);
+            Log.i(TAG, "Starting VPN → proxy=" + proxyHost + ":" + proxyPort + " underlyingNetwork=" + underlyingNetwork);
         }
 
         startVpn();
@@ -75,45 +79,46 @@ public class MarketVpnService extends VpnService implements Runnable {
 
     private static class SessionState {
         SocksTcpRelay relay;
-        long seq = 1000;
-        long ack = 1000;
+        long seq = 1000; // our outgoing ACK value (tracks bytes received from client; initialized to clientISN+1)
+        long ack = 1000; // our outgoing SEQ value (tracks bytes we have sent to client; starts at our ISN)
         String srcAddr;
         int srcPort;
         String dstAddr;
         int dstPort;
     }
 
-    private final java.util.Map<String, SessionState> sessions = new java.util.concurrent.ConcurrentHashMap<>();
-    private final java.util.Map<String, String> ipToDomain = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, SessionState> sessions = new ConcurrentHashMap<>();
+    private final Map<String, Long> failedSessions = new ConcurrentHashMap<>(); // key → time of failure
+    private final Map<String, String> ipToDomain = new ConcurrentHashMap<>();
     private int nextFakeIp = 1;
 
     @Override
     public void run() {
         try {
             setupVpn();
-            
+
             FileInputStream in = new FileInputStream(vpnInterface.getFileDescriptor());
             FileOutputStream out = new FileOutputStream(vpnInterface.getFileDescriptor());
-            
+
             ByteBuffer buffer = ByteBuffer.allocate(32768);
-            
+
             while (running) {
                 int length = in.read(buffer.array());
                 if (length > 0) {
                     IpPacketParser.PacketInfo info = IpPacketParser.parse(buffer, length);
                     if (info != null) {
-                        if (info.protocol == 6) { // TCP
+                        if (info.protocol == 6) {
                             handleTcpPacket(info, buffer, out);
-                        } else if (info.protocol == 17 && info.destinationPort == 53) { // UDP DNS
+                        } else if (info.protocol == 17 && info.destinationPort == 53) {
                             handleDnsPacket(info, buffer, out);
                         }
                     }
                     buffer.clear();
                 }
-                
+
                 if (Thread.interrupted()) break;
             }
-            
+
         } catch (Exception e) {
             Log.e(TAG, "VPN Execution error: " + e.getMessage());
         } finally {
@@ -121,35 +126,79 @@ public class MarketVpnService extends VpnService implements Runnable {
         }
     }
 
+    /** Finds the active WiFi Network, preferring the one set explicitly via setUnderlyingNetwork(). */
+    private Network findWifiNetwork() {
+        if (underlyingNetwork != null) return underlyingNetwork;
+        ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        if (cm == null) return null;
+        for (Network net : cm.getAllNetworks()) {
+            NetworkCapabilities caps = cm.getNetworkCapabilities(net);
+            if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                Log.d(TAG, "Dynamically found WiFi network: " + net);
+                return net;
+            }
+        }
+        return null;
+    }
+
     private void handleTcpPacket(IpPacketParser.PacketInfo info, ByteBuffer buffer, FileOutputStream out) throws IOException {
         String key = info.destinationAddress + ":" + info.destinationPort + "<-" + info.sourcePort;
         SessionState state = sessions.get(key);
 
         if (state == null) {
+            // Don't retry a recently failed flow — prevents the relay spam
+            Long failedAt = failedSessions.get(key);
+            if (failedAt != null && System.currentTimeMillis() - failedAt < FAILED_SESSION_COOLDOWN_MS) {
+                return;
+            }
+            failedSessions.remove(key);
+
             state = new SessionState();
-            state.srcAddr = "10.0.0.2"; // Local TUN address
+            state.srcAddr = "10.0.0.2";
             state.srcPort = info.sourcePort;
-            
-            String targetHost = ipToDomain.getOrDefault(info.destinationAddress, info.destinationAddress);
             state.dstAddr = info.destinationAddress;
             state.dstPort = info.destinationPort;
-            
+            // Initialize our ack to client's ISN + 1 so SYN-ACK and subsequent ACKs are correct.
+            // SYN consumes one sequence number, so ack = clientISN + 1.
+            state.seq = (info.tcpSeq + 1) & 0xFFFFFFFFL;
+
+            String targetHost = ipToDomain.getOrDefault(info.destinationAddress, info.destinationAddress);
             state.relay = new SocksTcpRelay(proxyHost, proxyPort, targetHost, info.destinationPort);
+
             state.relay.setProtector(socket -> {
-                if (underlyingNetwork != null) {
+                Network net = findWifiNetwork();
+                if (net != null) {
                     try {
-                        underlyingNetwork.bindSocket(socket);
+                        net.bindSocket(socket);
+                        Log.d(TAG, "bindSocket() succeeded on " + net);
                         return true;
                     } catch (IOException e) {
                         Log.e(TAG, "bindSocket failed: " + e.getMessage());
                     }
                 }
                 boolean ok = protect(socket);
-                Log.d(TAG, "protect() fallback = " + ok);
+                Log.w(TAG, "protect() fallback = " + ok + " (no WiFi network found)");
                 return ok;
             });
+
             sessions.put(key, state);
-            
+
+            // Send SYN-ACK so the client's TCP stack completes the handshake and sends data.
+            // Without this, the browser waits forever and never transmits the HTTP/TLS payload.
+            boolean isSyn = (info.tcpFlags & 0x02) != 0 && (info.tcpFlags & 0x10) == 0;
+            if (isSyn) {
+                byte[] synAck = PacketUtils.createTcpPacket(
+                    state.dstAddr, state.dstPort,
+                    state.srcAddr, state.srcPort,
+                    state.ack, state.seq, // seq=our ISN (1000), ack=clientISN+1
+                    (byte) 0x12,          // SYN + ACK
+                    null
+                );
+                out.write(synAck);
+                state.ack += 1; // SYN consumes one sequence number on our side
+                Log.d(TAG, "Sent SYN-ACK for " + key);
+            }
+
             final SessionState finalState = state;
             state.relay.connect(new SocksTcpRelay.RelayCallback() {
                 @Override
@@ -159,7 +208,7 @@ public class MarketVpnService extends VpnService implements Runnable {
                             finalState.dstAddr, finalState.dstPort,
                             finalState.srcAddr, finalState.srcPort,
                             finalState.ack, finalState.seq,
-                            (byte) 0x10, // ACK flag
+                            (byte) 0x10,
                             data
                         );
                         out.write(response);
@@ -172,6 +221,7 @@ public class MarketVpnService extends VpnService implements Runnable {
                 @Override
                 public void onClosed() {
                     sessions.remove(key);
+                    failedSessions.put(key, System.currentTimeMillis()); // Cooldown before retry
                 }
             });
         }
@@ -189,13 +239,13 @@ public class MarketVpnService extends VpnService implements Runnable {
         byte[] query = new byte[info.payloadLength];
         buffer.position(info.payloadOffset);
         buffer.get(query);
-        
+
         String domain = PacketUtils.parseDnsQuery(query);
         if (domain != null) {
             String fakeIp = "10.1.0." + (nextFakeIp++);
             if (nextFakeIp > 254) nextFakeIp = 1;
             ipToDomain.put(fakeIp, domain);
-            
+
             byte[] dnsResponse = PacketUtils.createDnsResponse(query, fakeIp);
             if (dnsResponse != null) {
                 byte[] packet = PacketUtils.createUdpPacket(
@@ -204,22 +254,26 @@ public class MarketVpnService extends VpnService implements Runnable {
                     dnsResponse
                 );
                 out.write(packet);
-                Log.d(TAG, "DNS Fake Response: " + domain + " -> " + fakeIp);
+                Log.d(TAG, "DNS: " + domain + " -> " + fakeIp);
             }
         }
     }
 
     private void setupVpn() {
+        Network wifi = findWifiNetwork();
         Builder builder = new Builder();
         builder.setMtu(1400);
         builder.addAddress("10.0.0.2", 32);
         builder.addRoute("0.0.0.0", 0);
         builder.addDnsServer("8.8.8.8");
         builder.setSession("P2P Bandwidth Market");
-        if (underlyingNetwork != null) {
-            builder.setUnderlyingNetworks(new Network[]{underlyingNetwork});
+        if (wifi != null) {
+            builder.setUnderlyingNetworks(new Network[]{wifi});
+            Log.i(TAG, "VPN underlying network: " + wifi);
+        } else {
+            Log.w(TAG, "No WiFi network found for VPN underlying — protect() may fail");
         }
-        
+
         vpnInterface = builder.establish();
         if (vpnInterface == null) {
             throw new RuntimeException("Failed to establish VPN interface");

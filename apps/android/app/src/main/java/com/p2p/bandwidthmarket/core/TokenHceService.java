@@ -9,10 +9,14 @@ import java.util.Arrays;
 
 public class TokenHceService extends HostApduService {
     private static final String TAG = "TokenHceService";
-    private static String currentConfig = "OFFLINE:OFFLINE:0.0.0.0";
+    private static String cachedSsid = "OFFLINE";
+    private static String cachedPassphrase = "OFFLINE";
+    private static HotspotManager hotspotManager;
 
-    public static void setHotspotConfig(String ssid, String passphrase, String ip) {
-        currentConfig = ssid + ":" + passphrase + ":" + ip;
+    public static void setHotspotConfig(String ssid, String passphrase, HotspotManager manager) {
+        cachedSsid = ssid;
+        cachedPassphrase = passphrase;
+        hotspotManager = manager;
     }
 
     private static final byte[] SELECT_AID_COMMAND = {
@@ -29,8 +33,11 @@ public class TokenHceService extends HostApduService {
 
         String message = new String(commandApdu, StandardCharsets.UTF_8);
         if ("GET_CONFIG".equals(message)) {
-            Log.d(TAG, "Sending Config: " + currentConfig);
-            return currentConfig.getBytes(StandardCharsets.UTF_8);
+            // Scan IP fresh on every tap — hotspot interface may not have been up at start time
+            String ip = hotspotManager != null ? hotspotManager.getIpAddress() : "0.0.0.0";
+            String config = cachedSsid + ":" + cachedPassphrase + ":" + ip;
+            Log.d(TAG, "Sending Config: " + config);
+            return config.getBytes(StandardCharsets.UTF_8);
         }
 
         return "UNKNOWN_COMMAND".getBytes(StandardCharsets.UTF_8);
