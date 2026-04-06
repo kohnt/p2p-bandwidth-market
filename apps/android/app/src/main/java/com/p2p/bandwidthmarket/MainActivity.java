@@ -45,6 +45,7 @@ public class MainActivity extends AppCompatActivity {
     private volatile boolean hotspotNetworkCaptured = false;
     private static final int VPN_REQUEST_CODE = 1002;
     private static final int PERMISSION_REQUEST_CODE = 1001;
+    private Keymanager keyManager;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -56,6 +57,7 @@ public class MainActivity extends AppCompatActivity {
         usageTracker = new UsageTracker();
         nfcReader = new NfcReader(this);
         sessionController = new com.p2p.bandwidthmarket.core.SessionController(proxyServer, usageTracker);
+        keyManager= new keyManager();
         
         statusText = findViewById(R.id.textView2);
         usageText = findViewById(R.id.textView_usage);
