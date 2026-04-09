@@ -46,12 +46,19 @@ public class KeyManager {
         KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
         keyStore.load(null);
 
+        // Try to get the private key
         PrivateKey privateKey = (PrivateKey) keyStore.getKey(KEY_ALIAS, null);
-        PublicKey publicKey = keyStore.getCertificate(KEY_ALIAS).getPublicKey();
 
+        // Try to get the certificate and public key safely
+        java.security.cert.Certificate cert = keyStore.getCertificate(KEY_ALIAS);
+        PublicKey publicKey = (cert != null) ? cert.getPublicKey() : null;
+
+        // If either is missing, generate a new key pair
         if (privateKey == null || publicKey == null) {
-            return null; // key doesn't exist
+            return generateECKeyPair();
         }
+
+        // Both exist → return key pair
         return new KeyPair(publicKey, privateKey);
     }
 
@@ -67,9 +74,9 @@ public class KeyManager {
     }
 
     /**ECDH Key pair generator for session keys*/
-    public static KeyPair generateECDHKeyPair() throws Exception {
+    public static KeyPair generateSessionKeyPair() throws Exception {
         KeyPairGenerator kpg = KeyPairGenerator.getInstance("EC");
-        ECGenParameterSpec ecSpec = new ECGenParameterSpec("sec256r1"); // same as your identity key
+        ECGenParameterSpec ecSpec = new ECGenParameterSpec("secp256r1"); // same as your identity key
 
         kpg.initialize(ecSpec);
         return kpg.generateKeyPair();
@@ -134,7 +141,7 @@ public class KeyManager {
     }
 
     public static byte[] signData(byte[] data, PrivateKey privateKey) throws Exception {
-        Signature signature = Signature.getInstance("SHA256withers");
+        Signature signature = Signature.getInstance("SHA256withECDSA");
         signature.initSign(privateKey);
         signature.update(data);
         return signature.sign();

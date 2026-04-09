@@ -6,12 +6,14 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.VpnService;
 import android.os.ParcelFileDescriptor;
+import android.util.Base64;
 import android.util.Log;
 
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.security.KeyPair;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -276,7 +278,7 @@ public class MarketVpnService extends VpnService implements Runnable {
         }
     }
 
-    private void setupVpn() {
+    private void setupVpn() throws Exception {
         Network wifi = findWifiNetwork();
         Builder builder = new Builder();
         builder.setMtu(1400);
@@ -296,6 +298,7 @@ public class MarketVpnService extends VpnService implements Runnable {
             throw new RuntimeException("Failed to establish VPN interface");
         }
         Log.i(TAG, "VPN Interface established");
+        performCryptoHandshake();
     }
 
     @Override
@@ -303,4 +306,68 @@ public class MarketVpnService extends VpnService implements Runnable {
         stopVpn();
         super.onDestroy();
     }
+
+    public synchronized boolean performCryptoHandshake() throws Exception{
+        Log.d(TAG, "performCryptoHandshake: ");
+        /**Generate all the stuff we need for the first handshake*/
+        KeyPair userKeyPair=KeyManager.getECKeyPair();
+        Log.d("userKeyPair", "keyPair Generated: "+userKeyPair);
+        KeyPair sessionKeyPair=KeyManager.generateSessionKeyPair();
+        Log.d("sessionKeyPair", "keyPair Generated: "+sessionKeyPair);
+        String nonce=KeyManager.generateNonce();
+        Log.d("nonce", "nonce Generated: "+nonce);
+        long timestamp = System.currentTimeMillis();
+        Log.d("timestamp", "timestamp Generated: "+timestamp);
+
+        /**Generate the packet*/
+        byte[] nonceBytes=nonce.getBytes();
+        byte[] sessionPub=sessionKeyPair.getPublic().getEncoded();
+        byte[] identityPub=userKeyPair.getPublic().getEncoded();
+
+        ByteBuffer toSign = ByteBuffer.allocate(
+                8 + 4 + nonceBytes.length +
+                        4 + sessionPub.length +
+                        4 + identityPub.length
+        );
+
+        toSign.putLong(timestamp);
+
+        toSign.putInt(nonceBytes.length);
+        toSign.put(nonceBytes);
+
+        toSign.putInt(sessionPub.length);
+        toSign.put(sessionPub);
+
+        toSign.putInt(identityPub.length);
+        toSign.put(identityPub);
+
+        byte[] toSignBytes = toSign.array();
+
+        Log.d("toSign", "toSign Generated: "+ Base64.encodeToString(toSignBytes, Base64.NO_WRAP));
+
+        byte[] signature = KeyManager.signData(
+                toSign.array(),
+                userKeyPair.getPrivate()
+        );
+
+        ByteBuffer packet = ByteBuffer.allocate(
+                toSign.capacity() +
+                        4 + signature.length
+        );
+
+        // original data
+        packet.put(toSign.array());
+
+        // signature
+        packet.putInt(signature.length);
+        packet.put(signature);
+
+        byte[] packetBytes = packet.array();
+        Log.d("packet", "keyPair Generated: "+Base64.encodeToString(packetBytes, Base64.NO_WRAP));
+
+        return true;
+
+        /**Receive Reply from Server*/
+    }
+
 }
