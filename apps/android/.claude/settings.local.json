@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(adb devices:*)",
+      "Bash(adb wait-for-device:*)",
+      "Bash(./gradlew --stop)",
+      "Bash(cmd.exe:*)",
+      "Bash(taskkill /F /IM java.exe)",
+      "Bash(taskkill /F /IM gradle.exe)",
+      "Bash(taskkill /F /PID 30460)",
+      "Bash(taskkill /F /IM \"qemu-system-x86_64.exe\")",
+      "Bash(taskkill /F /IM \"emulator.exe\")"
+    ]
+  }
+}

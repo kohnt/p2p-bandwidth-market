@@ -57,7 +57,7 @@ public class MainActivity extends AppCompatActivity {
         nfcReader = new NfcReader(this);
         sessionController = new com.p2p.bandwidthmarket.core.SessionController(proxyServer, usageTracker);
         
-        statusText = findViewById(R.id.textView2);
+        statusText = findViewById(R.id.textView_throughput);
         usageText = findViewById(R.id.textView_usage);
         throughputText = findViewById(R.id.textView_throughput);
         quotaText = findViewById(R.id.textView_quota);
