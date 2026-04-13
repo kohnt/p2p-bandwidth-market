@@ -32,10 +32,12 @@ public class MainActivity extends AppCompatActivity {
     private UsageTracker usageTracker;
     private NfcReader nfcReader;
     private com.p2p.bandwidthmarket.core.SessionController sessionController;
-    private TextView statusText;
-    private TextView usageText;
-    private TextView throughputText;
+    private TextView statusText;   // short one-line state chip
+    private TextView usageText;    // bytes used in usage card
+    private TextView speedText;    // KB/s in usage card
     private TextView quotaText;
+    private TextView infoText;     // verbose details panel
+    private android.view.View infoLayout;
     private Button actionButton;
     private Button modeButton;
     private Button purchaseButton;
@@ -56,13 +58,15 @@ public class MainActivity extends AppCompatActivity {
         usageTracker = new UsageTracker();
         nfcReader = new NfcReader(this);
         sessionController = new com.p2p.bandwidthmarket.core.SessionController(proxyServer, usageTracker);
-        
-        statusText = findViewById(R.id.textView_throughput);
-        usageText = findViewById(R.id.textView_usage);
-        throughputText = findViewById(R.id.textView_throughput);
-        quotaText = findViewById(R.id.textView_quota);
-        actionButton = findViewById(R.id.button_hotspot);
-        modeButton = findViewById(R.id.button_mode);
+
+        statusText   = findViewById(R.id.textView_status);
+        usageText    = findViewById(R.id.textView_usage);
+        speedText    = findViewById(R.id.textView_speed);
+        quotaText    = findViewById(R.id.textView_quota);
+        infoText     = findViewById(R.id.textView_info);
+        infoLayout   = findViewById(R.id.layout_info);
+        actionButton  = findViewById(R.id.button_hotspot);
+        modeButton    = findViewById(R.id.button_mode);
         purchaseButton = findViewById(R.id.button_purchase);
 
         modeButton.setOnClickListener(v -> toggleMode());
@@ -79,9 +83,15 @@ public class MainActivity extends AppCompatActivity {
                 startNfcReading();
             }
         });
-        
+
         startMetricsUpdater();
         startWifiMonitor();
+    }
+
+    private void setInfo(String text) {
+        infoText.setText(text);
+        infoLayout.setVisibility(text == null || text.isEmpty()
+                ? android.view.View.GONE : android.view.View.VISIBLE);
     }
 
     private void startWifiMonitor() {
@@ -107,14 +117,16 @@ public class MainActivity extends AppCompatActivity {
         if (isSellerMode) {
             modeButton.setText("Switch to Buyer Mode");
             actionButton.setText("Start Hotspot");
-            statusText.setText("Seller Mode Active");
+            statusText.setText("Seller Mode");
             purchaseButton.setVisibility(android.view.View.GONE);
+            setInfo(null);
             nfcReader.stopReading();
         } else {
             modeButton.setText("Switch to Seller Mode");
             actionButton.setText("Scan NFC to Buy");
-            statusText.setText("Buyer Mode Active");
+            statusText.setText("Buyer Mode");
             purchaseButton.setVisibility(android.view.View.VISIBLE);
+            setInfo(null);
             stopHotspot();
         }
     }
@@ -125,35 +137,44 @@ public class MainActivity extends AppCompatActivity {
             long lastBytes = 0;
             @Override
             public void run() {
-                long currentBytes = usageTracker.getBytesUsed();
+                long currentBytes = isSellerMode
+                        ? usageTracker.getBytesUsed()
+                        : com.p2p.bandwidthmarket.core.MarketVpnService.getBytesRelayed();
                 long diff = currentBytes - lastBytes;
                 lastBytes = currentBytes;
-                
-                throughputText.setText(String.format("Speed: %.1f KB/s", diff / 1024.0));
-                usageText.setText("Usage: " + usageTracker.getFormattedUsage());
-                
+
+                usageText.setText(formatBytes(currentBytes));
+                speedText.setText(String.format("%.1f KB/s", diff / 1024.0));
+
                 handler.postDelayed(this, 1000);
             }
         });
     }
 
+    private String formatBytes(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        int exp = (int) (Math.log(bytes) / Math.log(1024));
+        char pre = "KMGTPE".charAt(exp - 1);
+        return String.format(java.util.Locale.US, "%.1f %cB", bytes / Math.pow(1024, exp), pre);
+    }
+
     private void simulatePurchase() {
-        statusText.setText("Purchasing 10MB Token via EC2...");
-        // Simulation of "Stage 0" Bootstrap
-        // In reality, this would be an HTTP request to EC2 via the proxy
+        statusText.setText("Purchasing...");
+        setInfo("Minting 10 MB token via EC2...");
         new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
-            statusText.setText("Token Minted! Upgrading Proxy...");
-            // Notify seller to authorize our IP
             proxyServer.authorizeClient("10.0.0.2"); // TUN local address
-            proxyServer.setPreAuthMode(false); // For demo, let everyone through
-            sessionController.startSession(10 * 1024 * 1024); // 10MB
-            quotaText.setText("Quota: 10 MB");
+            proxyServer.setPreAuthMode(false);
+            sessionController.startSession(10 * 1024 * 1024); // 10 MB
+            quotaText.setText("10 MB");
+            statusText.setText("Token Ready");
+            setInfo("Token minted. Starting VPN...");
             Toast.makeText(this, "Purchase Successful!", Toast.LENGTH_SHORT).show();
             startVpn();
         }, 2000);
     }
 
     private void startVpn() {
+        com.p2p.bandwidthmarket.core.MarketVpnService.resetBytesRelayed();
         android.content.Intent intent = android.net.VpnService.prepare(this);
         if (intent != null) {
             startActivityForResult(intent, VPN_REQUEST_CODE);
@@ -170,17 +191,18 @@ public class MainActivity extends AppCompatActivity {
             intent.putExtra("PROXY_HOST", currentProxyIp != null ? currentProxyIp : "192.168.43.1");
             intent.putExtra("PROXY_PORT", 8080);
             startService(intent);
-            statusText.setText("VPN Active - Tunneling through P2P");
+            statusText.setText("VPN Active");
+            setInfo("Tunneling through P2P proxy\n" + (currentProxyIp != null ? currentProxyIp : "192.168.43.1") + ":8080");
         }
     }
 
     private void checkPermissionsAndStartHotspot() {
         List<String> permissionsNeeded = new ArrayList<>();
-        
+
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             permissionsNeeded.add(Manifest.permission.ACCESS_FINE_LOCATION);
         }
-        
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ActivityCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
                 permissionsNeeded.add(Manifest.permission.NEARBY_WIFI_DEVICES);
@@ -196,14 +218,15 @@ public class MainActivity extends AppCompatActivity {
 
     private void startNfcReading() {
         hotspotNetworkCaptured = false;
-        statusText.setText("Waiting for Seller's NFC...");
+        statusText.setText("Waiting for NFC...");
+        setInfo(null);
         nfcReader.startReading(new NfcReader.ReaderCallback() {
             @Override
             public void onHotspotInfoReceived(String ssid, String passphrase, String proxyIp) {
                 runOnUiThread(() -> {
                     currentProxyIp = proxyIp;
-                    statusText.setText("Found Seller!\nSSID: " + ssid + "\nConnecting to hotspot...");
-                    // Delay so activity is fully resumed before showing the system WiFi dialog
+                    statusText.setText("Seller Found");
+                    setInfo("SSID: " + ssid + "\nConnecting to hotspot...");
                     new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() ->
                         connectToWifi(ssid, passphrase), 1000);
                 });
@@ -211,7 +234,10 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onError(String error) {
-                runOnUiThread(() -> statusText.setText("NFC Error: " + error));
+                runOnUiThread(() -> {
+                    statusText.setText("NFC Error");
+                    setInfo(error);
+                });
             }
         });
     }
@@ -224,47 +250,49 @@ public class MainActivity extends AppCompatActivity {
                     .setWpa2Passphrase(passphrase)
                     .build();
             wifiManager.addNetworkSuggestions(java.util.Arrays.asList(suggestion));
-            runOnUiThread(() -> statusText.setText("Connecting to hotspot...\nIf not auto-connected, join \"" + ssid + "\" in WiFi Settings, then tap Purchase"));
+            runOnUiThread(() -> {
+                statusText.setText("Connecting...");
+                setInfo("SSID: " + ssid + "\nPassword: " + passphrase + "\n\nIf not auto-connected, join this network in WiFi Settings, then tap Purchase.");
+            });
         }
     }
 
     private void startHotspot() {
-        statusText.setText("Starting Hotspot...");
+        statusText.setText("Starting...");
+        setInfo(null);
         hotspotManager.startHotspot(new HotspotManager.HotspotCallback() {
             @Override
             public void onStarted(String ssid, String passphrase) {
-                statusText.setText("Hotspot starting, detecting IP...");
                 actionButton.setText("Stop Hotspot");
                 startProxy();
-                // Register manager so NFC tap always does a fresh IP scan
                 TokenHceService.setHotspotConfig(ssid, passphrase, hotspotManager);
-                // Still delay UI update so the displayed IP has time to appear
                 new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
                     String ip = hotspotManager.getIpAddress();
-                    statusText.setText("Hotspot Active\nSSID: " + ssid + "\nPass: " + passphrase + "\nProxy IP: " + ip + "\nWaiting for Buyer Tap...");
+                    statusText.setText("Hotspot Active");
+                    setInfo("SSID: " + ssid + "\nPassword: " + passphrase + "\nProxy IP: " + ip + "\n\nWaiting for buyer NFC tap...");
                 }, 2000);
             }
 
             @Override
             public void onStopped() {
-                statusText.setText("Hotspot Stopped");
+                statusText.setText("Idle");
+                setInfo(null);
                 actionButton.setText("Start Hotspot");
                 stopProxy();
             }
 
             @Override
             public void onFailure(int errorCode) {
-                statusText.setText("Failed to start hotspot (" + errorCode + ")");
+                statusText.setText("Failed");
+                setInfo("Could not start hotspot (error " + errorCode + ")");
             }
         });
     }
 
     private void startProxy() {
         usageTracker.reset();
-        proxyServer.setPreAuthMode(false); // WiFi password is the gate for now
-        proxyServer.start(bytes -> runOnUiThread(() -> {
-            usageTracker.addBytes(bytes);
-        }));
+        proxyServer.setPreAuthMode(false);
+        proxyServer.start(bytes -> runOnUiThread(() -> usageTracker.addBytes(bytes)));
     }
 
     private void stopProxy() {
@@ -275,7 +303,8 @@ public class MainActivity extends AppCompatActivity {
     private void stopHotspot() {
         hotspotManager.stopHotspot();
         stopProxy();
-        statusText.setText("Hotspot Stopped");
+        statusText.setText("Idle");
+        setInfo(null);
         actionButton.setText("Start Hotspot");
     }
 

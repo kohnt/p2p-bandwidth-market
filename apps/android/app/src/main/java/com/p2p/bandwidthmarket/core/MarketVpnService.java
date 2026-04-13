@@ -28,11 +28,15 @@ public class MarketVpnService extends VpnService implements Runnable {
     private String proxyHost = "127.0.0.1";
     private int proxyPort = 8080;
     private static volatile Network underlyingNetwork;
+    private static final java.util.concurrent.atomic.AtomicLong bytesRelayed = new java.util.concurrent.atomic.AtomicLong(0);
 
     public static void setUnderlyingNetwork(Network network) {
         underlyingNetwork = network;
         Log.i(TAG, "Underlying network set: " + network);
     }
+
+    public static long getBytesRelayed() { return bytesRelayed.get(); }
+    public static void resetBytesRelayed() { bytesRelayed.set(0); }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -205,6 +209,7 @@ public class MarketVpnService extends VpnService implements Runnable {
             state.relay.connect(new SocksTcpRelay.RelayCallback() {
                 @Override
                 public void onDataReceived(byte[] data, int length) {
+                    bytesRelayed.addAndGet(length); // downstream bytes (server → buyer)
                     try {
                         byte[] response = PacketUtils.createTcpPacket(
                             finalState.dstAddr, finalState.dstPort,
@@ -234,6 +239,7 @@ public class MarketVpnService extends VpnService implements Runnable {
             byte[] data = new byte[info.payloadLength];
             buffer.position(info.payloadOffset);
             buffer.get(data);
+            bytesRelayed.addAndGet(info.payloadLength); // upstream bytes (buyer → server)
             state.relay.send(data, info.payloadLength);
             state.seq += info.payloadLength;
             // ACK the client's data immediately so it stops retransmitting while
