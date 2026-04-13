@@ -13,9 +13,18 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.security.KeyPair;
+import java.security.PublicKey;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+
+import javax.crypto.SecretKey;
+
+import org.json.JSONObject;
 
 /**
  * MarketVpnService intercepts device traffic and forwards it to a SOCKS5 proxy.
@@ -29,7 +38,12 @@ public class MarketVpnService extends VpnService implements Runnable {
     private boolean running = false;
     private String proxyHost = "127.0.0.1";
     private int proxyPort = 8080;
+    private String serverHost = "3.25.162.240"; // CHANGE THIS to your ngrok host or public IP
+    private int serverPort = 9999;               // CHANGE THIS to your ngrok port
     private static volatile Network underlyingNetwork;
+    private static volatile PublicKey serverkey;
+    private static volatile SecretKey sessionAesKey;
+    private static volatile String sessionToken;
 
     public static void setUnderlyingNetwork(Network network) {
         underlyingNetwork = network;
@@ -98,6 +112,14 @@ public class MarketVpnService extends VpnService implements Runnable {
     public void run() {
         try {
             setupVpn();
+            new Thread(() -> {
+                try {
+                    Thread.sleep(2000); // IMPORTANT: allow routing table to settle
+                    performCryptoHandshake();
+                } catch (Exception e) {
+                    Log.e(TAG, "Handshake delayed start failed", e);
+                }
+            }).start();
 
             FileInputStream in = new FileInputStream(vpnInterface.getFileDescriptor());
             FileOutputStream out = new FileOutputStream(vpnInterface.getFileDescriptor());
@@ -165,21 +187,17 @@ public class MarketVpnService extends VpnService implements Runnable {
             state.seq = (info.tcpSeq + 1) & 0xFFFFFFFFL;
 
             String targetHost = ipToDomain.getOrDefault(info.destinationAddress, info.destinationAddress);
-            state.relay = new SocksTcpRelay(proxyHost, proxyPort, targetHost, info.destinationPort);
+            
+            // To place the server "between" the seller and the internet:
+            // 1. We tell the SOCKS proxy (Seller) to connect to our ServerHost.
+            // 2. We pass the actual destination (google.com) inside the encrypted payload.
+            state.relay = new SocksTcpRelay(proxyHost, proxyPort, serverHost, serverPort, sessionAesKey, sessionToken);
 
             state.relay.setProtector(socket -> {
-                Network net = findWifiNetwork();
-                if (net != null) {
-                    try {
-                        net.bindSocket(socket);
-                        Log.d(TAG, "bindSocket() succeeded on " + net);
-                        return true;
-                    } catch (IOException e) {
-                        Log.e(TAG, "bindSocket failed: " + e.getMessage());
-                    }
-                }
+                // IMPORTANT:
+                // Always bypass VPN for handshake + relay control channel
                 boolean ok = protect(socket);
-                Log.w(TAG, "protect() fallback = " + ok + " (no WiFi network found)");
+                Log.i(TAG, "protect(socket) applied = " + ok);
                 return ok;
             });
 
@@ -298,7 +316,6 @@ public class MarketVpnService extends VpnService implements Runnable {
             throw new RuntimeException("Failed to establish VPN interface");
         }
         Log.i(TAG, "VPN Interface established");
-        performCryptoHandshake();
     }
 
     @Override
@@ -307,67 +324,89 @@ public class MarketVpnService extends VpnService implements Runnable {
         super.onDestroy();
     }
 
-    public synchronized boolean performCryptoHandshake() throws Exception{
-        Log.d(TAG, "performCryptoHandshake: ");
-        /**Generate all the stuff we need for the first handshake*/
-        KeyPair userKeyPair=KeyManager.getECKeyPair();
-        Log.d("userKeyPair", "keyPair Generated: "+userKeyPair);
-        KeyPair sessionKeyPair=KeyManager.generateSessionKeyPair();
-        Log.d("sessionKeyPair", "keyPair Generated: "+sessionKeyPair);
-        String nonce=KeyManager.generateNonce();
-        Log.d("nonce", "nonce Generated: "+nonce);
+    public synchronized void performCryptoHandshake() throws Exception {
+        Log.i(TAG, "Starting crypto handshake with " + proxyHost + ":" + proxyPort);
+
+        // 1. Generate identity and session keys
+        KeyPair userKeyPair = KeyManager.getECKeyPair();
+        KeyPair sessionKeyPair = KeyManager.generateSessionKeyPair();
+
+        // KeyManager.generateNonce() returns a Base64 string.
+        String nonceBase64 = KeyManager.generateNonce();
+        byte[] nonceBytes = Base64.decode(nonceBase64, Base64.NO_WRAP);
+
         long timestamp = System.currentTimeMillis();
-        Log.d("timestamp", "timestamp Generated: "+timestamp);
+        byte[] sessionPubEncoded = sessionKeyPair.getPublic().getEncoded();
+        byte[] identityPubEncoded = userKeyPair.getPublic().getEncoded();
 
-        /**Generate the packet*/
-        byte[] nonceBytes=nonce.getBytes();
-        byte[] sessionPub=sessionKeyPair.getPublic().getEncoded();
-        byte[] identityPub=userKeyPair.getPublic().getEncoded();
-
-        ByteBuffer toSign = ByteBuffer.allocate(
-                8 + 4 + nonceBytes.length +
-                        4 + sessionPub.length +
-                        4 + identityPub.length
-        );
-
+        // 2. Prepare data to sign: timestamp | nonce | sessionPub | identityPub
+        // This matches the format expected by the server for verification
+        ByteBuffer toSign = ByteBuffer.allocate(8 + 4 + nonceBytes.length + 4 + sessionPubEncoded.length + 4 + identityPubEncoded.length);
         toSign.putLong(timestamp);
-
         toSign.putInt(nonceBytes.length);
         toSign.put(nonceBytes);
+        toSign.putInt(sessionPubEncoded.length);
+        toSign.put(sessionPubEncoded);
+        toSign.putInt(identityPubEncoded.length);
+        toSign.put(identityPubEncoded);
 
-        toSign.putInt(sessionPub.length);
-        toSign.put(sessionPub);
+        byte[] signature = KeyManager.signData(toSign.array(), userKeyPair.getPrivate());
 
-        toSign.putInt(identityPub.length);
-        toSign.put(identityPub);
+        // 3. Build JSON request
+        JSONObject packet = new JSONObject();
+        packet.put("timestamp", timestamp);
+        packet.put("nonce", nonceBase64);
+        packet.put("identity_pub", Base64.encodeToString(identityPubEncoded, Base64.NO_WRAP));
+        packet.put("session_pub", Base64.encodeToString(sessionPubEncoded, Base64.NO_WRAP));
+        packet.put("signature", Base64.encodeToString(signature, Base64.NO_WRAP));
 
-        byte[] toSignBytes = toSign.array();
+        // 4. Send to server via a PROTECTED socket to avoid routing loops
+        try (Socket socket = new Socket()) {
+            protect(socket);
 
-        Log.d("toSign", "toSign Generated: "+ Base64.encodeToString(toSignBytes, Base64.NO_WRAP));
+            Log.i(TAG, "Connecting to EC2: " + serverHost + ":" + serverPort);
 
-        byte[] signature = KeyManager.signData(
-                toSign.array(),
-                userKeyPair.getPrivate()
-        );
+            // Connect to the actual Crypto Server for the handshake
+            socket.connect(new InetSocketAddress(serverHost, serverPort), 5000);
+            
+            OutputStream out = socket.getOutputStream();
+            out.write(packet.toString().getBytes());
+            out.flush();
 
-        ByteBuffer packet = ByteBuffer.allocate(
-                toSign.capacity() +
-                        4 + signature.length
-        );
+            // 5. Receive and verify response
+            InputStream in = socket.getInputStream();
+            byte[] responseBuffer = new byte[4096];
+            int n = in.read(responseBuffer);
+            if (n <= 0) throw new IOException("Empty response from server during handshake");
 
-        // original data
-        packet.put(toSign.array());
+            JSONObject response = new JSONObject(new String(responseBuffer, 0, n));
+            byte[] serverSessionPubBytes = Base64.decode(response.getString("session_pub"), Base64.NO_WRAP);
+            byte[] serverNonceBytes = Base64.decode(response.getString("nonce"), Base64.NO_WRAP);
+            byte[] serverSignature = Base64.decode(response.getString("signature"), Base64.NO_WRAP);
 
-        // signature
-        packet.putInt(signature.length);
-        packet.put(signature);
+            // Verify server signature over (UserSessionPub | UserNonce)
+            ByteBuffer serverToVerify = ByteBuffer.allocate(4 + sessionPubEncoded.length + 4 + nonceBytes.length);
+            serverToVerify.putInt(sessionPubEncoded.length);
+            serverToVerify.put(sessionPubEncoded);
+            serverToVerify.putInt(nonceBytes.length);
+            serverToVerify.put(nonceBytes);
+            
+            if (serverkey == null) serverkey = KeyManager.loadServerPublicKeyFromBase64();
+            
+            if (!KeyManager.verifySignature(serverToVerify.array(), serverSignature, serverkey)) {
+                throw new SecurityException("Server handshake signature verification failed!");
+            }
 
-        byte[] packetBytes = packet.array();
-        Log.d("packet", "keyPair Generated: "+Base64.encodeToString(packetBytes, Base64.NO_WRAP));
-
-        return true;
-
-        /**Receive Reply from Server*/
+            // 6. Derive shared AES key (session key)
+            PublicKey serverSessionPub = KeyManager.decodeECPublicKey(serverSessionPubBytes);
+            sessionAesKey = KeyManager.generateSharedKey(sessionKeyPair.getPrivate(), serverSessionPub);
+            sessionToken = response.getString("session_token");
+            
+            Log.i(TAG, "Crypto handshake successful. Session token: " + sessionToken);
+        } catch (Exception e) {
+            Log.e(TAG, "Crypto handshake failed", e);
+            throw e;
+        }
     }
 
 }

@@ -1,8 +1,12 @@
 package com.p2p.bandwidthmarket.core;
 
+import android.content.Context;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
+import android.util.Log;
 
+import java.io.InputStream;
+import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.KeyStore;
@@ -13,9 +17,12 @@ import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.Signature;
 import java.security.spec.ECGenParameterSpec;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.Arrays;
 
 import javax.crypto.Cipher;
 import javax.crypto.KeyAgreement;
+import javax.crypto.Mac;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
@@ -145,5 +152,46 @@ public class KeyManager {
         signature.initSign(privateKey);
         signature.update(data);
         return signature.sign();
+    }
+
+    public static byte[] decrypt(byte[] ciphertextWithIv, SecretKey key) throws Exception {
+        // 1. Extract IV (first 12 bytes)
+        byte[] iv = new byte[12];
+        System.arraycopy(ciphertextWithIv, 0, iv, 0, 12);
+
+        // 2. Extract ciphertext
+        byte[] ciphertext = new byte[ciphertextWithIv.length - 12];
+        System.arraycopy(ciphertextWithIv, 12, ciphertext, 0, ciphertext.length);
+
+        // 3. Init cipher
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        GCMParameterSpec spec = new GCMParameterSpec(128, iv);
+        cipher.init(Cipher.DECRYPT_MODE, key, spec);
+
+        // 4. Decrypt
+        return cipher.doFinal(ciphertext);
+    }
+
+    public static PublicKey loadServerPublicKeyFromBase64() throws Exception {
+        //genuinely don't want to deal with this anymore. Boom server public key
+        String base64Key = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE6kM1pNLOy72rHGCsSHl7aDb3RhQpcH2+pkqY17tx3+AppVQQzDiN3wbUr8RvAQznwQb/taYKOxG91lUntz5S0w==";
+
+        byte[] keyBytes = android.util.Base64.decode(base64Key, android.util.Base64.DEFAULT);
+
+        KeyFactory keyFactory = KeyFactory.getInstance("EC");
+        X509EncodedKeySpec keySpec = new X509EncodedKeySpec(keyBytes);
+
+        return keyFactory.generatePublic(keySpec);
+    }
+    public static PublicKey decodeECPublicKey(byte[] encoded) throws Exception {
+        KeyFactory kf = KeyFactory.getInstance("EC");
+        return kf.generatePublic(new X509EncodedKeySpec(encoded));
+    }
+
+    public static boolean verifySignature(byte[] data, byte[] sig, PublicKey pub) throws Exception {
+        Signature s = Signature.getInstance("SHA256withECDSA");
+        s.initVerify(pub);
+        s.update(data);
+        return s.verify(sig);
     }
 }

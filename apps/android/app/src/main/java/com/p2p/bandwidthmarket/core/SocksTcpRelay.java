@@ -10,9 +10,11 @@ import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import javax.crypto.SecretKey;
 
 /**
  * SocksTcpRelay handles the SOCKS5 handshake and relays data.
+ * It also supports optional AES/GCM encryption for the relayed data.
  */
 public class SocksTcpRelay {
     private static final String TAG = "SocksTcpRelay";
@@ -25,6 +27,8 @@ public class SocksTcpRelay {
     private OutputStream out;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private RelayCallback callback;
+    private final SecretKey sessionKey;
+    private final String sessionToken;
 
     public interface RelayCallback {
         void onDataReceived(byte[] data, int length);
@@ -41,11 +45,13 @@ public class SocksTcpRelay {
         this.protector = protector;
     }
 
-    public SocksTcpRelay(String proxyHost, int proxyPort, String targetHost, int targetPort) {
+    public SocksTcpRelay(String proxyHost, int proxyPort, String targetHost, int targetPort, SecretKey sessionKey, String sessionToken) {
         this.proxyHost = proxyHost;
         this.proxyPort = proxyPort;
         this.targetHost = targetHost;
         this.targetPort = targetPort;
+        this.sessionKey = sessionKey;
+        this.sessionToken = sessionToken;
     }
 
     public void connect(RelayCallback callback) {
@@ -53,8 +59,7 @@ public class SocksTcpRelay {
         executor.execute(() -> {
             try {
                 socket = new Socket();
-                socket.setSoTimeout(30000); // 30s read timeout — prevents blocking forever
-                if (protector != null) protector.protect(socket);
+                socket.setSoTimeout(0); // 30s read timeout
                 socket.connect(new InetSocketAddress(proxyHost, proxyPort), 5000);
                 in = socket.getInputStream();
                 out = socket.getOutputStream();
@@ -62,6 +67,21 @@ public class SocksTcpRelay {
 
                 if (performSocks5Handshake()) {
                     Log.i(TAG, "SOCKS5 handshake OK → " + targetHost + ":" + targetPort);
+
+                    // NEW: Send session token and destination info
+                    if (sessionKey != null && sessionToken != null) {
+                        // 1. Send the 8-byte token UNENCRYPTED first so server can find the key
+                        out.write(sessionToken.getBytes());
+
+                        // 2. Send the destination header ENCRYPTED
+                        byte[] hostBytes = targetHost.getBytes();
+                        ByteBuffer header = ByteBuffer.allocate(4 + hostBytes.length + 4);
+                        header.putInt(hostBytes.length);
+                        header.put(hostBytes);
+                        header.putInt(targetPort);
+                        send(header.array(), header.position());
+                    }
+
                     startRelaying();
                 } else {
                     Log.e(TAG, "SOCKS5 handshake FAILED for " + targetHost + ":" + targetPort);
@@ -101,24 +121,36 @@ public class SocksTcpRelay {
         
         out.write(buffer.array(), 0, buffer.position());
         
-        response = new byte[10]; // Success response is 10 bytes for IPv4
+        response = new byte[10]; 
         int read = in.read(response);
         return read >= 2 && response[1] == 0x00;
     }
 
     private void startRelaying() {
-        // Use a dedicated thread — not the shared executor — so the blocking read loop
-        // doesn't starve send() tasks that are queued on the same executor.
         Thread reader = new Thread(() -> {
-            byte[] buffer = new byte[16384];
             try {
-                int length;
-                while ((length = in.read(buffer)) != -1) {
-                    // Copy only the bytes actually read — caller must not use buffer.length
-                    byte[] chunk = java.util.Arrays.copyOf(buffer, length);
-                    if (callback != null) callback.onDataReceived(chunk, length);
+                if (sessionKey != null) {
+                    while (true) {
+                        byte[] lenBuf = new byte[4];
+                        if (!readFully(in, lenBuf)) break;
+                        int len = ByteBuffer.wrap(lenBuf).getInt();
+                        if (len <= 0 || len > 65536) throw new IOException("Invalid frame length: " + len);
+
+                        byte[] encrypted = new byte[len];
+                        if (!readFully(in, encrypted)) break;
+
+                        byte[] decrypted = KeyManager.decrypt(encrypted, sessionKey);
+                        if (callback != null) callback.onDataReceived(decrypted, decrypted.length);
+                    }
+                } else {
+                    byte[] buffer = new byte[16384];
+                    int length;
+                    while ((length = in.read(buffer)) != -1) {
+                        byte[] chunk = java.util.Arrays.copyOf(buffer, length);
+                        if (callback != null) callback.onDataReceived(chunk, length);
+                    }
                 }
-            } catch (IOException e) {
+            } catch (Exception e) {
                 Log.d(TAG, "Relay closed: " + e.getMessage());
             } finally {
                 close();
@@ -128,14 +160,33 @@ public class SocksTcpRelay {
         reader.start();
     }
 
+    private boolean readFully(InputStream in, byte[] b) throws IOException {
+        int n = 0;
+        while (n < b.length) {
+            int count = in.read(b, n, b.length - n);
+            if (count < 0) return false;
+            n += count;
+        }
+        return true;
+    }
+
     public void send(byte[] data, int length) {
         executor.execute(() -> {
             try {
                 if (out != null) {
-                    out.write(data, 0, length);
+                    byte[] payload = java.util.Arrays.copyOf(data, length);
+                    if (sessionKey != null) {
+                        payload = KeyManager.encrypt(payload, sessionKey);
+                        ByteBuffer framed = ByteBuffer.allocate(4 + payload.length);
+                        framed.putInt(payload.length);
+                        framed.put(payload);
+                        out.write(framed.array());
+                    } else {
+                        out.write(payload);
+                    }
                     out.flush();
                 }
-            } catch (IOException e) {
+            } catch (Exception e) {
                 Log.e(TAG, "Failed to send data: " + e.getMessage());
                 close();
             }
@@ -149,6 +200,7 @@ public class SocksTcpRelay {
         if (callback != null) callback.onClosed();
         executor.shutdownNow();
     }
+
     private boolean isIpv4(String host) {
         try {
             String[] parts = host.split("\\.");
