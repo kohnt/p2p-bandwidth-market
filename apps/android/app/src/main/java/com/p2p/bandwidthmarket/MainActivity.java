@@ -41,6 +41,10 @@ public class MainActivity extends AppCompatActivity {
     private Button purchaseButton;
     private boolean isSellerMode = true;
     private String currentProxyIp;
+    /** From EC2 redeem; wire into SOCKS/crypto when the tunnel supports it. */
+    private String sessionTunnelKeyB64 = "";
+    private String lastSellerId;
+    private String lastTapNonce;
     private android.net.Network currentNetwork;
     private volatile boolean hotspotNetworkCaptured = false;
     private static final int VPN_REQUEST_CODE = 1002;
@@ -104,6 +108,8 @@ public class MainActivity extends AppCompatActivity {
 
     private void toggleMode() {
         isSellerMode = !isSellerMode;
+        lastSellerId = null;
+        lastTapNonce = null;
         if (isSellerMode) {
             modeButton.setText("Switch to Buyer Mode");
             actionButton.setText("Start Hotspot");
@@ -138,19 +144,42 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void simulatePurchase() {
-        statusText.setText("Purchasing 10MB Token via EC2...");
-        // Simulation of "Stage 0" Bootstrap
-        // In reality, this would be an HTTP request to EC2 via the proxy
-        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
-            statusText.setText("Token Minted! Upgrading Proxy...");
-            // Notify seller to authorize our IP
-            proxyServer.authorizeClient("10.0.0.2"); // TUN local address
-            proxyServer.setPreAuthMode(false); // For demo, let everyone through
-            sessionController.startSession(10 * 1024 * 1024); // 10MB
-            quotaText.setText("Quota: 10 MB");
-            Toast.makeText(this, "Purchase Successful!", Toast.LENGTH_SHORT).show();
-            startVpn();
-        }, 2000);
+        if (lastSellerId == null || lastTapNonce == null) {
+            Toast.makeText(this, "Scan seller NFC first", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String redeemUrl = getString(R.string.ec2_redeem_url);
+        statusText.setText("Redeeming session with EC2...");
+        final String sellerId = lastSellerId;
+        final String tapNonce = lastTapNonce;
+        SessionRedeemClient.redeemAsync(redeemUrl, sellerId, tapNonce, new SessionRedeemClient.RedeemCallback() {
+            @Override
+            public void onSuccess(SessionRedeemClient.RedeemResult result) {
+                lastSellerId = null;
+                lastTapNonce = null;
+                sessionTunnelKeyB64 = result.sharedSessionKeyBase64;
+                android.util.Log.i("MainActivity", "Redeem OK; tunnel key present: "
+                        + (!sessionTunnelKeyB64.isEmpty()));
+                currentProxyIp = result.proxyIp;
+                statusText.setText("Redeem OK. Connecting to Wi‑Fi...");
+                connectToWifi(result.ssid, result.wifiPassphrase);
+                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                    statusText.setText("Token minted. Starting tunnel...");
+                    proxyServer.authorizeClient("10.0.0.2");
+                    proxyServer.setPreAuthMode(false);
+                    sessionController.startSession(10 * 1024 * 1024);
+                    quotaText.setText("Quota: 10 MB");
+                    Toast.makeText(MainActivity.this, "Purchase successful!", Toast.LENGTH_SHORT).show();
+                    startVpn();
+                }, 2000);
+            }
+
+            @Override
+            public void onError(String message) {
+                statusText.setText("Redeem failed");
+                Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+            }
+        });
     }
 
     private void startVpn() {
@@ -199,13 +228,21 @@ public class MainActivity extends AppCompatActivity {
         statusText.setText("Waiting for Seller's NFC...");
         nfcReader.startReading(new NfcReader.ReaderCallback() {
             @Override
+            public void onTapHandshakeReceived(String sellerId, String tapNonce) {
+                runOnUiThread(() -> {
+                    lastSellerId = sellerId;
+                    lastTapNonce = tapNonce;
+                    statusText.setText("NFC OK.\nTap Purchase to redeem with EC2.");
+                });
+            }
+
+            @Override
             public void onHotspotInfoReceived(String ssid, String passphrase, String proxyIp) {
                 runOnUiThread(() -> {
                     currentProxyIp = proxyIp;
-                    statusText.setText("Found Seller!\nSSID: " + ssid + "\nConnecting to hotspot...");
-                    // Delay so activity is fully resumed before showing the system WiFi dialog
+                    statusText.setText("Found Seller (legacy NFC)!\nSSID: " + ssid + "\nConnecting...");
                     new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() ->
-                        connectToWifi(ssid, passphrase), 1000);
+                            connectToWifi(ssid, passphrase), 1000);
                 });
             }
 
@@ -247,6 +284,7 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onStopped() {
+                TokenHceService.resetSession();
                 statusText.setText("Hotspot Stopped");
                 actionButton.setText("Start Hotspot");
                 stopProxy();
@@ -273,6 +311,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void stopHotspot() {
+        TokenHceService.resetSession();
         hotspotManager.stopHotspot();
         stopProxy();
         statusText.setText("Hotspot Stopped");

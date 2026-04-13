@@ -6,17 +6,31 @@ import android.util.Log;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.UUID;
 
 public class TokenHceService extends HostApduService {
     private static final String TAG = "TokenHceService";
     private static String cachedSsid = "OFFLINE";
     private static String cachedPassphrase = "OFFLINE";
     private static HotspotManager hotspotManager;
+    /** Stable for this hotspot session; buyer uses it in EC2 redeem (no Wi‑Fi secret over NFC). */
+    private static String sellerId;
 
     public static void setHotspotConfig(String ssid, String passphrase, HotspotManager manager) {
+        if (sellerId == null || sellerId.isEmpty()) {
+            sellerId = UUID.randomUUID().toString();
+        }
         cachedSsid = ssid;
         cachedPassphrase = passphrase;
         hotspotManager = manager;
+    }
+
+    /** Call when hotspot stops so the next session gets a fresh seller_id. */
+    public static void resetSession() {
+        sellerId = null;
+        cachedSsid = "OFFLINE";
+        cachedPassphrase = "OFFLINE";
+        hotspotManager = null;
     }
 
     private static final byte[] SELECT_AID_COMMAND = {
@@ -33,11 +47,14 @@ public class TokenHceService extends HostApduService {
 
         String message = new String(commandApdu, StandardCharsets.UTF_8);
         if ("GET_CONFIG".equals(message)) {
-            // Scan IP fresh on every tap — hotspot interface may not have been up at start time
-            String ip = hotspotManager != null ? hotspotManager.getIpAddress() : "0.0.0.0";
-            String config = cachedSsid + ":" + cachedPassphrase + ":" + ip;
-            Log.d(TAG, "Sending Config: " + config);
-            return config.getBytes(StandardCharsets.UTF_8);
+            if (sellerId == null || sellerId.isEmpty()) {
+                sellerId = UUID.randomUUID().toString();
+            }
+            String tapNonce = UUID.randomUUID().toString();
+            // NFC carries only handshake material; Wi‑Fi + proxy + tunnel key come from EC2 redeem.
+            String handshake = sellerId + "|" + tapNonce;
+            Log.d(TAG, "Sending tap handshake: " + sellerId + "|" + tapNonce);
+            return handshake.getBytes(StandardCharsets.UTF_8);
         }
 
         return "UNKNOWN_COMMAND".getBytes(StandardCharsets.UTF_8);

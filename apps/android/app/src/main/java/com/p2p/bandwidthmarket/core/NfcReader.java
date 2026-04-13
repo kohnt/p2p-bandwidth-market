@@ -15,7 +15,12 @@ public class NfcReader {
     private final Activity activity;
 
     public interface ReaderCallback {
-        void onHotspotInfoReceived(String ssid, String passphrase, String proxyIp);
+        /** New flow: {@code seller_id|tap_nonce} from seller HCE; secrets come from EC2 redeem. */
+        default void onTapHandshakeReceived(String sellerId, String tapNonce) {}
+
+        /** Legacy: {@code ssid:passphrase:proxyIp} (older demos). */
+        default void onHotspotInfoReceived(String ssid, String passphrase, String proxyIp) {}
+
         void onError(String error);
     }
 
@@ -51,11 +56,17 @@ public class NfcReader {
                         String result = new String(response, StandardCharsets.UTF_8);
                         Log.d(TAG, "Received from Seller: " + result);
 
-                        // Parse format: SSID:password:proxyIp
-                        String[] parts = result.split(":");
-                        if (parts.length >= 3) {
-                            if (this.callback != null) {
-                                this.callback.onHotspotInfoReceived(parts[0], parts[1], parts[2]);
+                        if (this.callback != null) {
+                            if (result.contains("|")) {
+                                String[] hp = result.split("\\|");
+                                if (hp.length == 2) {
+                                    this.callback.onTapHandshakeReceived(hp[0], hp[1]);
+                                }
+                            } else {
+                                String[] parts = result.split(":");
+                                if (parts.length >= 3) {
+                                    this.callback.onHotspotInfoReceived(parts[0], parts[1], parts[2]);
+                                }
                             }
                         }
 
