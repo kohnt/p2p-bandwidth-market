@@ -15,7 +15,7 @@ public class NfcReader {
     private final Activity activity;
 
     public interface ReaderCallback {
-        void onHotspotInfoReceived(String ssid, String passphrase, String proxyIp);
+        void onHotspotInfoReceived(String ssid, String passphrase, String sellerToken, String proxyIp);
         void onError(String error);
     }
 
@@ -51,11 +51,11 @@ public class NfcReader {
                         String result = new String(response, StandardCharsets.UTF_8);
                         Log.d(TAG, "Received from Seller: " + result);
 
-                        // Parse format: SSID:password:proxyIp
+                        // Parse format: SSID:passphrase:sellerToken:proxyIp
                         String[] parts = result.split(":");
-                        if (parts.length >= 3) {
+                        if (parts.length >= 4) {
                             if (this.callback != null) {
-                                this.callback.onHotspotInfoReceived(parts[0], parts[1], parts[2]);
+                                this.callback.onHotspotInfoReceived(parts[0], parts[1], parts[2], parts[3]);
                             }
                         }
 

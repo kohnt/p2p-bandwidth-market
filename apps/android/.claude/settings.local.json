@@ -9,7 +9,10 @@
       "Bash(taskkill /F /IM gradle.exe)",
       "Bash(taskkill /F /PID 30460)",
       "Bash(taskkill /F /IM \"qemu-system-x86_64.exe\")",
-      "Bash(taskkill /F /IM \"emulator.exe\")"
+      "Bash(taskkill /F /IM \"emulator.exe\")",
+      "Bash(./gradlew assembleDebug)",
+      "Read(//mnt/c/Users/heart/p2p-bandwidth-market/apps/android/**)",
+      "Read(//cygdrive/c/Users/heart/p2p-bandwidth-market/apps/android/**)"
     ]
   }
 }

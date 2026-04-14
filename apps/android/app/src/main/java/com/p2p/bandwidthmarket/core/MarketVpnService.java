@@ -25,8 +25,14 @@ public class MarketVpnService extends VpnService implements Runnable {
     private Thread thread;
     private ParcelFileDescriptor vpnInterface;
     private boolean running = false;
-    private String proxyHost = "127.0.0.1";
-    private int proxyPort = 8080;
+    // EC2 relay — all buyer traffic is TLS-encrypted to this endpoint.
+    // The seller's hotspot carries the bytes but cannot read them.
+    public static final String EC2_HOST = "3.25.162.240"; // TODO: fill in
+    public static final int EC2_PORT = 9999;
+
+    private String sellerToken = null;
+    private String bootstrapProxyHost = null; // seller's :8080 SOCKS5 — path to EC2 via LocalOnlyHotspot
+    private String sessionToken = null;       // obtained from ECDH handshake on VPN start
     private static volatile Network underlyingNetwork;
     private static final java.util.concurrent.atomic.AtomicLong bytesRelayed = new java.util.concurrent.atomic.AtomicLong(0);
 
@@ -46,9 +52,10 @@ public class MarketVpnService extends VpnService implements Runnable {
         }
 
         if (intent != null) {
-            proxyHost = intent.getStringExtra("PROXY_HOST");
-            proxyPort = intent.getIntExtra("PROXY_PORT", 1080);
-            Log.i(TAG, "Starting VPN → proxy=" + proxyHost + ":" + proxyPort + " underlyingNetwork=" + underlyingNetwork);
+            sellerToken = intent.getStringExtra("SELLER_TOKEN");
+            bootstrapProxyHost = intent.getStringExtra("BOOTSTRAP_PROXY_HOST");
+            Log.i(TAG, "Starting VPN → EC2=" + EC2_HOST + ":" + EC2_PORT
+                    + " seller=" + sellerToken + " bootstrap=" + bootstrapProxyHost);
         }
 
         startVpn();
@@ -99,6 +106,12 @@ public class MarketVpnService extends VpnService implements Runnable {
     @Override
     public void run() {
         try {
+            // ECDH handshake — gets a session token before any traffic is routed.
+            // Goes through seller's SOCKS5 proxy (bootstrapProxyHost:8080) because
+            // LocalOnlyHotspot blocks direct internet access from the buyer's device.
+            sessionToken = SocksTcpRelay.performHandshake(EC2_HOST, EC2_PORT, bootstrapProxyHost, 8080);
+            Log.i(TAG, "EC2 handshake OK, session=" + sessionToken);
+
             setupVpn();
 
             FileInputStream in = new FileInputStream(vpnInterface.getFileDescriptor());
@@ -167,7 +180,8 @@ public class MarketVpnService extends VpnService implements Runnable {
             state.seq = (info.tcpSeq + 1) & 0xFFFFFFFFL;
 
             String targetHost = ipToDomain.getOrDefault(info.destinationAddress, info.destinationAddress);
-            state.relay = new SocksTcpRelay(proxyHost, proxyPort, targetHost, info.destinationPort);
+            state.relay = new SocksTcpRelay(EC2_HOST, EC2_PORT, targetHost, info.destinationPort,
+                    sessionToken, sellerToken, bootstrapProxyHost, 8080);
 
             state.relay.setProtector(socket -> {
                 Network net = findWifiNetwork();

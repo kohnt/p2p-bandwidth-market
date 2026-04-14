@@ -10,6 +10,8 @@ import android.net.Network;
 import android.os.Build;
 import android.os.Bundle;
 import android.widget.Button;
+import android.widget.EditText;
+import android.widget.RadioGroup;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -38,12 +40,17 @@ public class MainActivity extends AppCompatActivity {
     private TextView quotaText;
     private TextView infoText;     // verbose details panel
     private android.view.View infoLayout;
+    private android.view.View dataAmountLayout;
+    private RadioGroup radioGroupData;
+    private EditText editTextCustomMb;
     private Button actionButton;
     private Button modeButton;
     private Button purchaseButton;
     private boolean isSellerMode = true;
-    private String currentProxyIp;
+    private String currentSellerToken;  // received via NFC (buyer) or locally generated (seller)
+    private String currentProxyIp;      // seller's hotspot IP — bootstrap SOCKS5 proxy for buyer
     private android.net.Network currentNetwork;
+    private com.p2p.bandwidthmarket.core.SellerRelayClient sellerRelayClient;
     private volatile boolean hotspotNetworkCaptured = false;
     private static final int VPN_REQUEST_CODE = 1002;
     private static final int PERMISSION_REQUEST_CODE = 1001;
@@ -59,15 +66,43 @@ public class MainActivity extends AppCompatActivity {
         nfcReader = new NfcReader(this);
         sessionController = new com.p2p.bandwidthmarket.core.SessionController(proxyServer, usageTracker);
 
+        // Generate a stable seller token once per install and persist it.
+        android.content.SharedPreferences prefs = getPreferences(MODE_PRIVATE);
+        String storedToken = prefs.getString("seller_token", null);
+        if (storedToken == null) {
+            storedToken = java.util.UUID.randomUUID().toString();
+            prefs.edit().putString("seller_token", storedToken).apply();
+        }
+        currentSellerToken = storedToken;
+
         statusText   = findViewById(R.id.textView_status);
         usageText    = findViewById(R.id.textView_usage);
         speedText    = findViewById(R.id.textView_speed);
         quotaText    = findViewById(R.id.textView_quota);
-        infoText     = findViewById(R.id.textView_info);
-        infoLayout   = findViewById(R.id.layout_info);
-        actionButton  = findViewById(R.id.button_hotspot);
-        modeButton    = findViewById(R.id.button_mode);
-        purchaseButton = findViewById(R.id.button_purchase);
+        infoText         = findViewById(R.id.textView_info);
+        infoLayout       = findViewById(R.id.layout_info);
+        dataAmountLayout = findViewById(R.id.layout_data_amount);
+        radioGroupData   = findViewById(R.id.radioGroup_data);
+        editTextCustomMb = findViewById(R.id.editText_custom_mb);
+        actionButton     = findViewById(R.id.button_hotspot);
+        modeButton       = findViewById(R.id.button_mode);
+        purchaseButton   = findViewById(R.id.button_purchase);
+
+        radioGroupData.setOnCheckedChangeListener((group, checkedId) -> {
+            boolean isCustom = checkedId == R.id.radio_custom;
+            editTextCustomMb.setVisibility(isCustom ? android.view.View.VISIBLE : android.view.View.GONE);
+            if (!isCustom) {
+                purchaseButton.setText("Purchase " + selectedDataLabel() + " Token");
+            }
+        });
+        editTextCustomMb.addTextChangedListener(new android.text.TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int st, int c, int a) {}
+            public void onTextChanged(CharSequence s, int st, int b, int c) {
+                String label = s.toString().isEmpty() ? "?" : s.toString() + " MB";
+                purchaseButton.setText("Purchase " + label + " Token");
+            }
+            public void afterTextChanged(android.text.Editable s) {}
+        });
 
         modeButton.setOnClickListener(v -> toggleMode());
         purchaseButton.setOnClickListener(v -> simulatePurchase());
@@ -118,6 +153,7 @@ public class MainActivity extends AppCompatActivity {
             modeButton.setText("Switch to Buyer Mode");
             actionButton.setText("Start Hotspot");
             statusText.setText("Seller Mode");
+            dataAmountLayout.setVisibility(android.view.View.GONE);
             purchaseButton.setVisibility(android.view.View.GONE);
             setInfo(null);
             nfcReader.stopReading();
@@ -125,9 +161,39 @@ public class MainActivity extends AppCompatActivity {
             modeButton.setText("Switch to Seller Mode");
             actionButton.setText("Scan NFC to Buy");
             statusText.setText("Buyer Mode");
+            dataAmountLayout.setVisibility(android.view.View.VISIBLE);
             purchaseButton.setVisibility(android.view.View.VISIBLE);
+            purchaseButton.setText("Purchase " + selectedDataLabel() + " Token");
             setInfo(null);
             stopHotspot();
+        }
+    }
+
+    /** Returns a display label for the currently selected data amount. */
+    private String selectedDataLabel() {
+        int id = radioGroupData.getCheckedRadioButtonId();
+        if (id == R.id.radio_10mb)  return "10 MB";
+        if (id == R.id.radio_25mb)  return "25 MB";
+        if (id == R.id.radio_50mb)  return "50 MB";
+        if (id == R.id.radio_100mb) return "100 MB";
+        String custom = editTextCustomMb.getText().toString().trim();
+        return custom.isEmpty() ? "?" : custom + " MB";
+    }
+
+    /** Returns quota in bytes for the currently selected data amount, or -1 if invalid. */
+    private long selectedQuotaBytes() {
+        int id = radioGroupData.getCheckedRadioButtonId();
+        if (id == R.id.radio_10mb)  return 10L  * 1024 * 1024;
+        if (id == R.id.radio_25mb)  return 25L  * 1024 * 1024;
+        if (id == R.id.radio_50mb)  return 50L  * 1024 * 1024;
+        if (id == R.id.radio_100mb) return 100L * 1024 * 1024;
+        // Custom
+        try {
+            double mb = Double.parseDouble(editTextCustomMb.getText().toString().trim());
+            if (mb <= 0) return -1;
+            return (long) (mb * 1024 * 1024);
+        } catch (NumberFormatException e) {
+            return -1;
         }
     }
 
@@ -159,18 +225,40 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void simulatePurchase() {
+        long quotaBytes = selectedQuotaBytes();
+        if (quotaBytes <= 0) {
+            Toast.makeText(this, "Please enter a valid data amount", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String label = selectedDataLabel();
         statusText.setText("Purchasing...");
-        setInfo("Minting 10 MB token via EC2...");
+        setInfo("Minting " + label + " token via EC2...");
         new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
             proxyServer.authorizeClient("10.0.0.2"); // TUN local address
             proxyServer.setPreAuthMode(false);
-            sessionController.startSession(10 * 1024 * 1024); // 10 MB
-            quotaText.setText("10 MB");
+            sessionController.startSession(
+                quotaBytes,
+                com.p2p.bandwidthmarket.core.MarketVpnService::getBytesRelayed,
+                () -> runOnUiThread(() -> {
+                    stopVpnService();
+                    statusText.setText("Quota Exhausted");
+                    quotaText.setText("0 MB");
+                    setInfo(label + " quota used — session ended.");
+                    Toast.makeText(this, label + " quota used — session ended", Toast.LENGTH_LONG).show();
+                })
+            );
+            quotaText.setText(label);
             statusText.setText("Token Ready");
             setInfo("Token minted. Starting VPN...");
             Toast.makeText(this, "Purchase Successful!", Toast.LENGTH_SHORT).show();
             startVpn();
         }, 2000);
+    }
+
+    private void stopVpnService() {
+        android.content.Intent intent = new android.content.Intent(this, com.p2p.bandwidthmarket.core.MarketVpnService.class);
+        intent.setAction("STOP");
+        startService(intent);
     }
 
     private void startVpn() {
@@ -188,11 +276,11 @@ public class MainActivity extends AppCompatActivity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == VPN_REQUEST_CODE && resultCode == RESULT_OK) {
             android.content.Intent intent = new android.content.Intent(this, com.p2p.bandwidthmarket.core.MarketVpnService.class);
-            intent.putExtra("PROXY_HOST", currentProxyIp != null ? currentProxyIp : "192.168.43.1");
-            intent.putExtra("PROXY_PORT", 8080);
+            intent.putExtra("SELLER_TOKEN", currentSellerToken);
+            intent.putExtra("BOOTSTRAP_PROXY_HOST", currentProxyIp);
             startService(intent);
             statusText.setText("VPN Active");
-            setInfo("Tunneling through P2P proxy\n" + (currentProxyIp != null ? currentProxyIp : "192.168.43.1") + ":8080");
+            setInfo("Tunneling through EC2 relay (seller: " + currentSellerToken + ")");
         }
     }
 
@@ -222,8 +310,9 @@ public class MainActivity extends AppCompatActivity {
         setInfo(null);
         nfcReader.startReading(new NfcReader.ReaderCallback() {
             @Override
-            public void onHotspotInfoReceived(String ssid, String passphrase, String proxyIp) {
+            public void onHotspotInfoReceived(String ssid, String passphrase, String sellerToken, String proxyIp) {
                 runOnUiThread(() -> {
+                    currentSellerToken = sellerToken;
                     currentProxyIp = proxyIp;
                     statusText.setText("Seller Found");
                     setInfo("SSID: " + ssid + "\nConnecting to hotspot...");
@@ -265,7 +354,8 @@ public class MainActivity extends AppCompatActivity {
             public void onStarted(String ssid, String passphrase) {
                 actionButton.setText("Stop Hotspot");
                 startProxy();
-                TokenHceService.setHotspotConfig(ssid, passphrase, hotspotManager);
+                TokenHceService.setHotspotConfig(ssid, passphrase, currentSellerToken, hotspotManager);
+                startSellerRelay();
                 new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
                     String ip = hotspotManager.getIpAddress();
                     statusText.setText("Hotspot Active");
@@ -303,9 +393,27 @@ public class MainActivity extends AppCompatActivity {
     private void stopHotspot() {
         hotspotManager.stopHotspot();
         stopProxy();
+        stopSellerRelay();
         statusText.setText("Idle");
         setInfo(null);
         actionButton.setText("Start Hotspot");
+    }
+
+    private void startSellerRelay() {
+        stopSellerRelay();
+        sellerRelayClient = new com.p2p.bandwidthmarket.core.SellerRelayClient(
+            com.p2p.bandwidthmarket.core.MarketVpnService.EC2_HOST,
+            com.p2p.bandwidthmarket.core.MarketVpnService.EC2_PORT,
+            currentSellerToken
+        );
+        sellerRelayClient.start();
+    }
+
+    private void stopSellerRelay() {
+        if (sellerRelayClient != null) {
+            sellerRelayClient.stop();
+            sellerRelayClient = null;
+        }
     }
 
     @Override

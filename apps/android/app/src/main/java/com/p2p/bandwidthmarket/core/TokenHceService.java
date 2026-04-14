@@ -11,11 +11,13 @@ public class TokenHceService extends HostApduService {
     private static final String TAG = "TokenHceService";
     private static String cachedSsid = "OFFLINE";
     private static String cachedPassphrase = "OFFLINE";
+    private static String cachedSellerToken = "";
     private static HotspotManager hotspotManager;
 
-    public static void setHotspotConfig(String ssid, String passphrase, HotspotManager manager) {
+    public static void setHotspotConfig(String ssid, String passphrase, String sellerToken, HotspotManager manager) {
         cachedSsid = ssid;
         cachedPassphrase = passphrase;
+        cachedSellerToken = sellerToken;
         hotspotManager = manager;
     }
 
@@ -33,9 +35,11 @@ public class TokenHceService extends HostApduService {
 
         String message = new String(commandApdu, StandardCharsets.UTF_8);
         if ("GET_CONFIG".equals(message)) {
-            // Scan IP fresh on every tap — hotspot interface may not have been up at start time
+            // Format: SSID:passphrase:sellerToken:proxyIp
+            // Buyer uses proxyIp:8080 as a SOCKS5 bootstrap to reach EC2
+            // (LocalOnlyHotspot blocks direct internet; seller's proxy relays it).
             String ip = hotspotManager != null ? hotspotManager.getIpAddress() : "0.0.0.0";
-            String config = cachedSsid + ":" + cachedPassphrase + ":" + ip;
+            String config = cachedSsid + ":" + cachedPassphrase + ":" + cachedSellerToken + ":" + ip;
             Log.d(TAG, "Sending Config: " + config);
             return config.getBytes(StandardCharsets.UTF_8);
         }
