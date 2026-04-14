@@ -13,12 +13,20 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.ByteBuffer;
+import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.security.spec.ECGenParameterSpec;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import javax.crypto.Cipher;
+import javax.crypto.KeyAgreement;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 
 /**
  * Relays TCP traffic through the EC2 relay server using p2p.py's JSON-frame protocol.
@@ -27,19 +35,35 @@ import java.util.concurrent.Executors;
  *   All messages: [4-byte big-endian length][UTF-8 JSON body]
  *
  *   connect() sends:
- *     {"type":"hello","session":<token>,"target_host":<str>,"target_port":<int>,"seller":<token>}
+ *     {"type":"hello","session":<token>,"target_host":<str>,"target_port":<int>}
  *
  *   send() sends:
- *     {"type":"relay","session":<token>,"data":<base64>}
+ *     {"type":"relay","session":<token>,"data":<base64 of AES-GCM(plaintext)>}
  *
  *   Inbound frames:
- *     {"type":"data","data":<base64>}
+ *     {"type":"data","data":<base64 of AES-GCM(plaintext)>}
  *
- * Session tokens come from a one-shot ECDH handshake (performHandshake).
- * Call that once when the VPN starts; reuse the token for all relays.
+ * All relay data is encrypted with AES-128-GCM using a key derived from an ECDH
+ * handshake with EC2. The seller's SOCKS5 proxy carries the bytes but sees only
+ * ciphertext — it cannot read the payload.
+ *
+ * Frame encryption format: [12-byte random IV][AES-GCM ciphertext + 16-byte tag]
+ *
+ * Session tokens and AES keys come from performHandshake(). Call that once when the
+ * VPN starts; reuse both for all relays.
  */
 public class SocksTcpRelay {
     private static final String TAG = "SocksTcpRelay";
+
+    /** Result of a completed ECDH handshake with EC2. */
+    public static class HandshakeResult {
+        public final String sessionToken;
+        public final byte[] aesKey; // 16-byte AES-128 key
+        public HandshakeResult(String sessionToken, byte[] aesKey) {
+            this.sessionToken = sessionToken;
+            this.aesKey = aesKey;
+        }
+    }
 
     private final String ec2Host;
     private final int ec2Port;
@@ -47,8 +71,9 @@ public class SocksTcpRelay {
     private final int targetPort;
     private final String sessionToken;
     private final String sellerToken;
-    private final String bootstrapProxyHost; // seller's SOCKS5 proxy — used to reach EC2 via LocalOnlyHotspot
+    private final String bootstrapProxyHost;
     private final int bootstrapProxyPort;
+    private final byte[] aesKey; // AES-128 key shared with EC2
 
     private Socket socket;
     private InputStream in;
@@ -73,7 +98,8 @@ public class SocksTcpRelay {
 
     public SocksTcpRelay(String ec2Host, int ec2Port, String targetHost, int targetPort,
                           String sessionToken, String sellerToken,
-                          String bootstrapProxyHost, int bootstrapProxyPort) {
+                          String bootstrapProxyHost, int bootstrapProxyPort,
+                          byte[] aesKey) {
         this.ec2Host = ec2Host;
         this.ec2Port = ec2Port;
         this.targetHost = targetHost;
@@ -82,14 +108,15 @@ public class SocksTcpRelay {
         this.sellerToken = sellerToken;
         this.bootstrapProxyHost = bootstrapProxyHost;
         this.bootstrapProxyPort = bootstrapProxyPort;
+        this.aesKey = aesKey;
     }
 
     // -------------------------------------------------------------------------
-    // One-shot ECDH handshake — call once on VPN start to obtain a session token
+    // One-shot ECDH handshake — call once on VPN start to obtain session token + AES key
     // -------------------------------------------------------------------------
 
-    public static String performHandshake(String ec2Host, int ec2Port,
-                                           String bootstrapProxyHost, int bootstrapProxyPort) throws Exception {
+    public static HandshakeResult performHandshake(String ec2Host, int ec2Port,
+                                                    String bootstrapProxyHost, int bootstrapProxyPort) throws Exception {
         try (Socket socket = openSocket(ec2Host, ec2Port, bootstrapProxyHost, bootstrapProxyPort, null)) {
             socket.setSoTimeout(15000);
             InputStream in   = socket.getInputStream();
@@ -113,10 +140,50 @@ public class SocksTcpRelay {
             writeFrame(out, hs);
 
             JSONObject resp = readFrame(in);
+
+            // Complete ECDH: derive shared secret using EC2's ephemeral public key
+            byte[] serverPubBytes = Base64.decode(resp.getString("session_pub"), Base64.NO_WRAP);
+            java.security.PublicKey serverPub = KeyFactory.getInstance("EC")
+                    .generatePublic(new X509EncodedKeySpec(serverPubBytes));
+
+            KeyAgreement ka = KeyAgreement.getInstance("ECDH");
+            ka.init(kp.getPrivate());
+            ka.doPhase(serverPub, true);
+            byte[] sharedSecret = ka.generateSecret();
+
+            // Derive 16-byte AES-128 key: SHA-256(shared_secret)[:16]
+            byte[] aesKey = Arrays.copyOf(
+                    MessageDigest.getInstance("SHA-256").digest(sharedSecret), 16);
+
             String token = resp.getString("session_token");
-            Log.i(TAG, "Handshake OK — session token obtained");
-            return token;
+            Log.i(TAG, "Handshake OK — session token + AES key derived");
+            return new HandshakeResult(token, aesKey);
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // AES-128-GCM helpers
+    // Format: [12-byte random IV][ciphertext + 16-byte GCM tag]
+    // -------------------------------------------------------------------------
+
+    private byte[] encrypt(byte[] plaintext) throws Exception {
+        byte[] iv = new byte[12];
+        new SecureRandom().nextBytes(iv);
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(aesKey, "AES"), new GCMParameterSpec(128, iv));
+        byte[] ciphertext = cipher.doFinal(plaintext);
+        byte[] out = new byte[12 + ciphertext.length];
+        System.arraycopy(iv, 0, out, 0, 12);
+        System.arraycopy(ciphertext, 0, out, 12, ciphertext.length);
+        return out;
+    }
+
+    private byte[] decrypt(byte[] data) throws Exception {
+        byte[] iv         = Arrays.copyOfRange(data, 0, 12);
+        byte[] ciphertext = Arrays.copyOfRange(data, 12, data.length);
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(aesKey, "AES"), new GCMParameterSpec(128, iv));
+        return cipher.doFinal(ciphertext);
     }
 
     // -------------------------------------------------------------------------
@@ -158,7 +225,8 @@ public class SocksTcpRelay {
                 while (true) {
                     JSONObject frame = readFrame(in);
                     if (!"data".equals(frame.optString("type"))) continue;
-                    byte[] data = Base64.decode(frame.getString("data"), Base64.NO_WRAP);
+                    byte[] encrypted = Base64.decode(frame.getString("data"), Base64.NO_WRAP);
+                    byte[] data = decrypt(encrypted);
                     if (callback != null) callback.onDataReceived(data, data.length);
                 }
             } catch (Exception e) {
@@ -174,10 +242,12 @@ public class SocksTcpRelay {
     public void send(byte[] data, int length) {
         executor.execute(() -> {
             try {
+                byte[] plaintext = Arrays.copyOf(data, length);
+                byte[] encrypted = encrypt(plaintext);
                 JSONObject frame = new JSONObject();
                 frame.put("type",    "relay");
                 frame.put("session", sessionToken);
-                frame.put("data",    Base64.encodeToString(data, 0, length, Base64.NO_WRAP));
+                frame.put("data",    Base64.encodeToString(encrypted, Base64.NO_WRAP));
                 writeFrame(out, frame);
             } catch (Exception e) {
                 Log.e(TAG, "Send failed: " + e.getMessage());

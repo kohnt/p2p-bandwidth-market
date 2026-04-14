@@ -33,6 +33,7 @@ public class MarketVpnService extends VpnService implements Runnable {
     private String sellerToken = null;
     private String bootstrapProxyHost = null; // seller's :8080 SOCKS5 — path to EC2 via LocalOnlyHotspot
     private String sessionToken = null;       // obtained from ECDH handshake on VPN start
+    private byte[] aesKey = null;             // AES-128 key shared with EC2 via ECDH
     private static volatile Network underlyingNetwork;
     private static final java.util.concurrent.atomic.AtomicLong bytesRelayed = new java.util.concurrent.atomic.AtomicLong(0);
 
@@ -109,7 +110,10 @@ public class MarketVpnService extends VpnService implements Runnable {
             // ECDH handshake — gets a session token before any traffic is routed.
             // Goes through seller's SOCKS5 proxy (bootstrapProxyHost:8080) because
             // LocalOnlyHotspot blocks direct internet access from the buyer's device.
-            sessionToken = SocksTcpRelay.performHandshake(EC2_HOST, EC2_PORT, bootstrapProxyHost, 8080);
+            SocksTcpRelay.HandshakeResult handshake =
+                    SocksTcpRelay.performHandshake(EC2_HOST, EC2_PORT, bootstrapProxyHost, 8080);
+            sessionToken = handshake.sessionToken;
+            aesKey = handshake.aesKey;
             Log.i(TAG, "EC2 handshake OK, session=" + sessionToken);
 
             setupVpn();
@@ -180,8 +184,11 @@ public class MarketVpnService extends VpnService implements Runnable {
             state.seq = (info.tcpSeq + 1) & 0xFFFFFFFFL;
 
             String targetHost = ipToDomain.getOrDefault(info.destinationAddress, info.destinationAddress);
+            // sellerToken is intentionally null: EC2 is the exit node (Option A).
+            // The seller's SOCKS5 proxy (bootstrapProxyHost) is still used as transport
+            // but only sees AES-GCM ciphertext — it cannot read the payload.
             state.relay = new SocksTcpRelay(EC2_HOST, EC2_PORT, targetHost, info.destinationPort,
-                    sessionToken, sellerToken, bootstrapProxyHost, 8080);
+                    sessionToken, null, bootstrapProxyHost, 8080, aesKey);
 
             state.relay.setProtector(socket -> {
                 Network net = findWifiNetwork();
