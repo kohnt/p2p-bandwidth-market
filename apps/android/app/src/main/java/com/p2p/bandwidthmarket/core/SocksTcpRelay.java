@@ -1,5 +1,7 @@
 package com.p2p.bandwidthmarket.core;
 
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
 import android.util.Base64;
 import android.util.Log;
 
@@ -16,7 +18,10 @@ import java.nio.ByteBuffer;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.KeyStore;
 import java.security.MessageDigest;
+import java.security.PrivateKey;
+import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.Signature;
 import java.security.spec.ECGenParameterSpec;
@@ -70,6 +75,30 @@ public class SocksTcpRelay {
     // Must match the server_public_key.der deployed on EC2.
     // TODO: paste the actual base64 here after generating the server keypair.
     private static final String SERVER_EC_PUBLIC_KEY_B64 = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE6kM1pNLOy72rHGCsSHl7aDb3RhQpcH2+pkqY17tx3+AppVQQzDiN3wbUr8RvAQznwQb/taYKOxG91lUntz5S0w==";
+
+    private static final String IDENTITY_KEY_ALIAS = "p2p_market_identity";
+
+    private static KeyPair getOrCreateIdentityKey() throws Exception {
+        KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
+        ks.load(null);
+        if (!ks.containsAlias(IDENTITY_KEY_ALIAS)) {
+            KeyPairGenerator kpg = KeyPairGenerator.getInstance(
+                    KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore");
+            kpg.initialize(new KeyGenParameterSpec.Builder(
+                    IDENTITY_KEY_ALIAS,
+                    KeyProperties.PURPOSE_SIGN | KeyProperties.PURPOSE_VERIFY)
+                    .setDigests(KeyProperties.DIGEST_SHA256)
+                    .setAlgorithmParameterSpec(new ECGenParameterSpec("secp256r1"))
+                    .build());
+            kpg.generateKeyPair();
+            Log.i(TAG, "Generated new persistent identity key in AndroidKeyStore");
+        } else {
+            Log.i(TAG, "Loaded existing identity key from AndroidKeyStore");
+        }
+        PrivateKey privateKey = (PrivateKey) ks.getKey(IDENTITY_KEY_ALIAS, null);
+        PublicKey publicKey = ks.getCertificate(IDENTITY_KEY_ALIAS).getPublicKey();
+        return new KeyPair(publicKey, privateKey);
+    }
 
     private final String ec2Host;
     private final int ec2Port;
@@ -128,66 +157,68 @@ public class SocksTcpRelay {
             InputStream in   = socket.getInputStream();
             OutputStream out = socket.getOutputStream();
 
+            // Long-term identity key from Keystore
+            KeyPair identityKp = getOrCreateIdentityKey();
+            byte[] idPubDer = identityKp.getPublic().getEncoded();
+
             // Ephemeral EC keypair for ECDH.
-            // Force AndroidOpenSSL provider so the public key is encoded with a named-curve
-            // OID (secp256r1) rather than explicit curve parameters — OpenSSL 3.x on EC2
-            // rejects explicit-param keys with an X509 parse error.
             KeyPairGenerator kpg = KeyPairGenerator.getInstance("EC", "AndroidOpenSSL");
             kpg.initialize(new ECGenParameterSpec("secp256r1"));
-            KeyPair kp = kpg.generateKeyPair();
-            byte[] pubDer = kp.getPublic().getEncoded();
-            String pubB64 = Base64.encodeToString(pubDer, Base64.NO_WRAP);
+            KeyPair sessionKp = kpg.generateKeyPair();
+            byte[] sessionPubDer = sessionKp.getPublic().getEncoded();
 
             byte[] nonceA = new byte[16];
             new SecureRandom().nextBytes(nonceA);
             long timestamp = System.currentTimeMillis();
 
-            // Step 1 — sign all fields so the server can verify we hold the private key.
+            // Step 1 — sign all fields so the server can verify we hold the identity key.
             // Signed bytes: "handshake" || timestamp(8-byte BE) || nonceA || identity_pub_DER || session_pub_DER
             Signature signer = Signature.getInstance("SHA256withECDSA");
-            signer.initSign(kp.getPrivate());
+            signer.initSign(identityKp.getPrivate());
             signer.update("handshake".getBytes("UTF-8"));
             signer.update(ByteBuffer.allocate(8).putLong(timestamp).array());
             signer.update(nonceA);
-            signer.update(pubDer); // identity_pub
-            signer.update(pubDer); // session_pub (same ephemeral key)
+            signer.update(idPubDer);
+            signer.update(sessionPubDer);
 
             JSONObject hs = new JSONObject();
             hs.put("type",         "handshake");
             hs.put("timestamp",    timestamp);
             hs.put("nonce",        Base64.encodeToString(nonceA, Base64.NO_WRAP));
-            hs.put("identity_pub", pubB64);
-            hs.put("session_pub",  pubB64);
+            hs.put("identity_pub", Base64.encodeToString(idPubDer, Base64.NO_WRAP));
+            hs.put("session_pub",  Base64.encodeToString(sessionPubDer, Base64.NO_WRAP));
             hs.put("client_sig",   Base64.encodeToString(signer.sign(), Base64.NO_WRAP));
             writeFrame(out, hs);
+            Log.i(TAG, "Client out packet"+ hs);
 
             JSONObject resp = readFrame(in);
+            Log.i(TAG, "Client in packet"+ resp);
 
             // Step 2 — verify the server signed: server_session_pub_DER || session_pub_A_DER || nonceA || nonceS
-            byte[] serverPubBytes = Base64.decode(resp.getString("session_pub"), Base64.NO_WRAP);
-            byte[] nonceS         = Base64.decode(resp.getString("nonce_s"),     Base64.NO_WRAP);
-            byte[] serverSigBytes = Base64.decode(resp.getString("server_sig"),  Base64.NO_WRAP);
+            byte[] serverSessPubBytes = Base64.decode(resp.getString("session_pub"), Base64.NO_WRAP);
+            byte[] nonceS             = Base64.decode(resp.getString("nonce_s"),     Base64.NO_WRAP);
+            byte[] serverSigBytes     = Base64.decode(resp.getString("server_sig"),  Base64.NO_WRAP);
 
-            java.security.PublicKey serverLongTermPub = KeyFactory.getInstance("EC")
+            PublicKey serverLongTermPub = KeyFactory.getInstance("EC")
                     .generatePublic(new X509EncodedKeySpec(
                             Base64.decode(SERVER_EC_PUBLIC_KEY_B64, Base64.NO_WRAP)));
             Signature verifier = Signature.getInstance("SHA256withECDSA");
             verifier.initVerify(serverLongTermPub);
-            verifier.update(serverPubBytes); // server_session_pub DER
-            verifier.update(pubDer);         // session_pub_A DER
-            verifier.update(nonceA);         // nonce_A
-            verifier.update(nonceS);         // nonce_S
+            verifier.update(serverSessPubBytes); // server_session_pub DER
+            verifier.update(sessionPubDer);      // session_pub_A DER
+            verifier.update(nonceA);             // nonce_A
+            verifier.update(nonceS);             // nonce_S
             if (!verifier.verify(serverSigBytes)) {
                 throw new SecurityException("Server signature verification failed — possible MITM");
             }
 
             // ECDH with server's ephemeral session key
-            java.security.PublicKey serverPub = KeyFactory.getInstance("EC")
-                    .generatePublic(new X509EncodedKeySpec(serverPubBytes));
+            PublicKey serverSessPub = KeyFactory.getInstance("EC")
+                    .generatePublic(new X509EncodedKeySpec(serverSessPubBytes));
 
             KeyAgreement ka = KeyAgreement.getInstance("ECDH");
-            ka.init(kp.getPrivate());
-            ka.doPhase(serverPub, true);
+            ka.init(sessionKp.getPrivate());
+            ka.doPhase(serverSessPub, true);
             byte[] sharedSecret = ka.generateSecret();
 
             // Derive 16-byte AES-128 key: SHA-256(shared_secret)[:16]
@@ -266,6 +297,8 @@ public class SocksTcpRelay {
                     if (!"data".equals(frame.optString("type"))) continue;
                     byte[] encrypted = Base64.decode(frame.getString("data"), Base64.NO_WRAP);
                     byte[] data = decrypt(encrypted);
+                    //Log.i(TAG, "Relay in plaintext"+ Arrays.toString(data));
+                    //Log.i(TAG, "Relay in encrypted"+ Arrays.toString(encrypted));
                     if (callback != null) callback.onDataReceived(data, data.length);
                 }
             } catch (Exception e) {
@@ -283,6 +316,8 @@ public class SocksTcpRelay {
             try {
                 byte[] plaintext = Arrays.copyOf(data, length);
                 byte[] encrypted = encrypt(plaintext);
+                Log.i(TAG, "Send plaintext"+ Arrays.toString(plaintext));
+                Log.i(TAG, "Send encrypted"+ Arrays.toString(encrypted));
                 JSONObject frame = new JSONObject();
                 frame.put("type",    "relay");
                 frame.put("session", sessionToken);

@@ -64,7 +64,13 @@ public class MarketVpnService extends VpnService implements Runnable {
     }
 
     private void startVpn() {
-        if (running) return;
+        if (running) {
+            Log.w(TAG, "VPN already running, stopping old instance first");
+            stopVpn();
+            // Give it a moment to clean up
+            try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+        }
+        
         running = true;
         thread = new Thread(this, "MarketVpnThread");
         thread.start();
@@ -77,6 +83,13 @@ public class MarketVpnService extends VpnService implements Runnable {
             thread.interrupt();
             thread = null;
         }
+        
+        // Clear session data so a fresh start does a fresh handshake
+        sessionToken = null;
+        aesKey = null;
+        sessions.clear();
+        failedSessions.clear();
+
         try {
             if (vpnInterface != null) {
                 vpnInterface.close();
