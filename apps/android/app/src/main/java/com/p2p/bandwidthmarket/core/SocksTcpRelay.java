@@ -18,6 +18,7 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
+import java.security.Signature;
 import java.security.spec.ECGenParameterSpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Arrays;
@@ -64,6 +65,11 @@ public class SocksTcpRelay {
             this.aesKey = aesKey;
         }
     }
+
+    // Server's long-term EC public key (SubjectPublicKeyInfo/DER, Base64-encoded).
+    // Must match the server_public_key.der deployed on EC2.
+    // TODO: paste the actual base64 here after generating the server keypair.
+    private static final String SERVER_EC_PUBLIC_KEY_B64 = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE6kM1pNLOy72rHGCsSHl7aDb3RhQpcH2+pkqY17tx3+AppVQQzDiN3wbUr8RvAQznwQb/taYKOxG91lUntz5S0w==";
 
     private final String ec2Host;
     private final int ec2Port;
@@ -122,27 +128,60 @@ public class SocksTcpRelay {
             InputStream in   = socket.getInputStream();
             OutputStream out = socket.getOutputStream();
 
-            // Ephemeral EC keypair for ECDH
-            KeyPairGenerator kpg = KeyPairGenerator.getInstance("EC");
+            // Ephemeral EC keypair for ECDH.
+            // Force AndroidOpenSSL provider so the public key is encoded with a named-curve
+            // OID (secp256r1) rather than explicit curve parameters — OpenSSL 3.x on EC2
+            // rejects explicit-param keys with an X509 parse error.
+            KeyPairGenerator kpg = KeyPairGenerator.getInstance("EC", "AndroidOpenSSL");
             kpg.initialize(new ECGenParameterSpec("secp256r1"));
             KeyPair kp = kpg.generateKeyPair();
-            String pubB64 = Base64.encodeToString(kp.getPublic().getEncoded(), Base64.NO_WRAP);
+            byte[] pubDer = kp.getPublic().getEncoded();
+            String pubB64 = Base64.encodeToString(pubDer, Base64.NO_WRAP);
 
-            byte[] nonce = new byte[16];
-            new SecureRandom().nextBytes(nonce);
+            byte[] nonceA = new byte[16];
+            new SecureRandom().nextBytes(nonceA);
+            long timestamp = System.currentTimeMillis();
+
+            // Step 1 — sign all fields so the server can verify we hold the private key.
+            // Signed bytes: "handshake" || timestamp(8-byte BE) || nonceA || identity_pub_DER || session_pub_DER
+            Signature signer = Signature.getInstance("SHA256withECDSA");
+            signer.initSign(kp.getPrivate());
+            signer.update("handshake".getBytes("UTF-8"));
+            signer.update(ByteBuffer.allocate(8).putLong(timestamp).array());
+            signer.update(nonceA);
+            signer.update(pubDer); // identity_pub
+            signer.update(pubDer); // session_pub (same ephemeral key)
 
             JSONObject hs = new JSONObject();
             hs.put("type",         "handshake");
-            hs.put("timestamp",    System.currentTimeMillis());
-            hs.put("nonce",        Base64.encodeToString(nonce, Base64.NO_WRAP));
+            hs.put("timestamp",    timestamp);
+            hs.put("nonce",        Base64.encodeToString(nonceA, Base64.NO_WRAP));
             hs.put("identity_pub", pubB64);
             hs.put("session_pub",  pubB64);
+            hs.put("client_sig",   Base64.encodeToString(signer.sign(), Base64.NO_WRAP));
             writeFrame(out, hs);
 
             JSONObject resp = readFrame(in);
 
-            // Complete ECDH: derive shared secret using EC2's ephemeral public key
+            // Step 2 — verify the server signed: server_session_pub_DER || session_pub_A_DER || nonceA || nonceS
             byte[] serverPubBytes = Base64.decode(resp.getString("session_pub"), Base64.NO_WRAP);
+            byte[] nonceS         = Base64.decode(resp.getString("nonce_s"),     Base64.NO_WRAP);
+            byte[] serverSigBytes = Base64.decode(resp.getString("server_sig"),  Base64.NO_WRAP);
+
+            java.security.PublicKey serverLongTermPub = KeyFactory.getInstance("EC")
+                    .generatePublic(new X509EncodedKeySpec(
+                            Base64.decode(SERVER_EC_PUBLIC_KEY_B64, Base64.NO_WRAP)));
+            Signature verifier = Signature.getInstance("SHA256withECDSA");
+            verifier.initVerify(serverLongTermPub);
+            verifier.update(serverPubBytes); // server_session_pub DER
+            verifier.update(pubDer);         // session_pub_A DER
+            verifier.update(nonceA);         // nonce_A
+            verifier.update(nonceS);         // nonce_S
+            if (!verifier.verify(serverSigBytes)) {
+                throw new SecurityException("Server signature verification failed — possible MITM");
+            }
+
+            // ECDH with server's ephemeral session key
             java.security.PublicKey serverPub = KeyFactory.getInstance("EC")
                     .generatePublic(new X509EncodedKeySpec(serverPubBytes));
 

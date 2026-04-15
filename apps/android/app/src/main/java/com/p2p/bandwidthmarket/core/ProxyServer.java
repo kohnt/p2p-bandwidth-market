@@ -85,7 +85,7 @@ public class ProxyServer {
     }
 
     private boolean preAuthMode = true;
-    private final java.util.Set<String> ec2Whitelist = new java.util.HashSet<>(java.util.Arrays.asList("ec2.amazonaws.com", "1.2.3.4")); // Example IPs
+    private final java.util.Set<String> ec2Whitelist = new java.util.HashSet<>(java.util.Arrays.asList(MarketVpnService.EC2_HOST));
     private final java.util.Set<String> authorizedClients = new java.util.HashSet<>();
 
     public void setPreAuthMode(boolean enabled) {
