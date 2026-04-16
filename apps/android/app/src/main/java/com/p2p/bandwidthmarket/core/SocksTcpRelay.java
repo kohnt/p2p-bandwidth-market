@@ -61,6 +61,31 @@ import javax.crypto.spec.SecretKeySpec;
 public class SocksTcpRelay {
     private static final String TAG = "SocksTcpRelay";
 
+    // --- METRICS START ---
+    public static class Metrics {
+        public static long totalRawBytesSent = 0;
+        public static long totalWireBytesSent = 0;
+        public static long totalRawBytesReceived = 0;
+        public static long totalWireBytesReceived = 0;
+        public static long handshakeMs = 0;
+        public static long lastReportTime = 0;
+
+        public static synchronized void report() {
+            long now = System.currentTimeMillis();
+            if (now - lastReportTime < 30000) return; // Only log every 30s
+            lastReportTime = now;
+
+            double upTax = totalRawBytesSent == 0 ? 1 : (double)totalWireBytesSent / totalRawBytesSent;
+            double downTax = totalRawBytesReceived == 0 ? 1 : (double)totalWireBytesReceived / totalRawBytesReceived;
+
+            Log.i("RELAY_METRICS", String.format(
+                    "STATS: Handshake: %dms | Up: %d KB (tax %.2fx) | Down: %d KB (tax %.2fx)",
+                    handshakeMs, totalRawBytesSent/1024, upTax, totalRawBytesReceived/1024, downTax
+            ));
+        }
+    }
+    // --- METRICS END ---
+
     /** Result of a completed ECDH handshake with EC2. */
     public static class HandshakeResult {
         public final String sessionToken;
@@ -152,6 +177,7 @@ public class SocksTcpRelay {
 
     public static HandshakeResult performHandshake(String ec2Host, int ec2Port,
                                                     String bootstrapProxyHost, int bootstrapProxyPort) throws Exception {
+        long startTime = System.currentTimeMillis();
         try (Socket socket = openSocket(ec2Host, ec2Port, bootstrapProxyHost, bootstrapProxyPort, null)) {
             socket.setSoTimeout(15000);
             InputStream in   = socket.getInputStream();
@@ -226,7 +252,8 @@ public class SocksTcpRelay {
                     MessageDigest.getInstance("SHA-256").digest(sharedSecret), 16);
 
             String token = resp.getString("session_token");
-            Log.i(TAG, "Handshake OK — session token + AES key derived");
+            Metrics.handshakeMs = System.currentTimeMillis() - startTime;
+            Log.i(TAG, "Handshake OK — session token + AES key derived (" + Metrics.handshakeMs + "ms)");
             return new HandshakeResult(token, aesKey);
         }
     }
@@ -293,12 +320,20 @@ public class SocksTcpRelay {
         Thread t = new Thread(() -> {
             try {
                 while (true) {
-                    JSONObject frame = readFrame(in);
+                    byte[] lenBuf = readExactly(in, 4);
+                    int length = ByteBuffer.wrap(lenBuf).getInt();
+                    byte[] body = readExactly(in, length);
+                    
+                    Metrics.totalWireBytesReceived += (length + 4);
+                    JSONObject frame = new JSONObject(new String(body, "UTF-8"));
+                    
                     if (!"data".equals(frame.optString("type"))) continue;
                     byte[] encrypted = Base64.decode(frame.getString("data"), Base64.NO_WRAP);
                     byte[] data = decrypt(encrypted);
-                    //Log.i(TAG, "Relay in plaintext"+ Arrays.toString(data));
-                    //Log.i(TAG, "Relay in encrypted"+ Arrays.toString(encrypted));
+                    
+                    Metrics.totalRawBytesReceived += data.length;
+                    Metrics.report();
+
                     if (callback != null) callback.onDataReceived(data, data.length);
                 }
             } catch (Exception e) {
@@ -316,12 +351,15 @@ public class SocksTcpRelay {
             try {
                 byte[] plaintext = Arrays.copyOf(data, length);
                 byte[] encrypted = encrypt(plaintext);
-                Log.i(TAG, "Send plaintext"+ Arrays.toString(plaintext));
-                Log.i(TAG, "Send encrypted"+ Arrays.toString(encrypted));
                 JSONObject frame = new JSONObject();
                 frame.put("type",    "relay");
                 frame.put("session", sessionToken);
                 frame.put("data",    Base64.encodeToString(encrypted, Base64.NO_WRAP));
+                
+                byte[] body = frame.toString().getBytes("UTF-8");
+                Metrics.totalRawBytesSent += length;
+                Metrics.totalWireBytesSent += (body.length + 4);
+
                 writeFrame(out, frame);
             } catch (Exception e) {
                 Log.e(TAG, "Send failed: " + e.getMessage());
