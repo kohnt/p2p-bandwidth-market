@@ -34,6 +34,7 @@ public class MainActivity extends AppCompatActivity {
     private UsageTracker usageTracker;
     private NfcReader nfcReader;
     private com.p2p.bandwidthmarket.core.SessionController sessionController;
+    private TextView modeText;     // mode title
     private TextView statusText;   // short one-line state chip
     private TextView usageText;    // bytes used in usage card
     private TextView speedText;    // KB/s in usage card
@@ -74,7 +75,7 @@ public class MainActivity extends AppCompatActivity {
             prefs.edit().putString("seller_token", storedToken).apply();
         }
         currentSellerToken = storedToken;
-
+        modeText = findViewById(R.id.textView_mode);
         statusText   = findViewById(R.id.textView_status);
         usageText    = findViewById(R.id.textView_usage);
         speedText    = findViewById(R.id.textView_speed);
@@ -150,6 +151,7 @@ public class MainActivity extends AppCompatActivity {
     private void toggleMode() {
         isSellerMode = !isSellerMode;
         if (isSellerMode) {
+            modeText.setText("Seller Mode");
             modeButton.setText("Switch to Buyer Mode");
             actionButton.setText("Start Hotspot");
             statusText.setText("Seller Mode");
@@ -158,6 +160,7 @@ public class MainActivity extends AppCompatActivity {
             setInfo(null);
             nfcReader.stopReading();
         } else {
+            modeText.setText("Buyer Mode");
             modeButton.setText("Switch to Seller Mode");
             actionButton.setText("Scan NFC to Buy");
             statusText.setText("Buyer Mode");
