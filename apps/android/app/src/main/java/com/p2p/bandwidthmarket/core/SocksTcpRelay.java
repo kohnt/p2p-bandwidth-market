@@ -172,13 +172,46 @@ public class SocksTcpRelay {
     }
 
     // -------------------------------------------------------------------------
+    // Pre-VPN payment simulation — call before handshake to obtain a payment token.
+    // Uses the same SOCKS5 bootstrap path as the handshake (the only route available
+    // before the VPN is established).
+    // -------------------------------------------------------------------------
+
+    public static String performPayment(String ec2Host, int ec2Port,
+                                        String bootstrapProxyHost, int bootstrapProxyPort,
+                                        int amountMb, android.net.Network network) throws Exception {
+        try (Socket socket = openSocket(ec2Host, ec2Port, bootstrapProxyHost, bootstrapProxyPort, null, network)) {
+            socket.setSoTimeout(15000);
+            InputStream  in  = socket.getInputStream();
+            OutputStream out = socket.getOutputStream();
+
+            JSONObject req = new JSONObject();
+            req.put("type",      "payment");
+            req.put("amount_mb", amountMb);
+            writeFrame(out, req);
+            Log.i(TAG, "Payment request sent: " + amountMb + " MB");
+
+            JSONObject resp = readFrame(in);
+            Log.i(TAG, "Payment response: " + resp);
+
+            if (!"ok".equals(resp.optString("status"))) {
+                throw new IOException("Payment rejected: " + resp.optString("error", "unknown"));
+            }
+            String token = resp.getString("payment_token");
+            Log.i(TAG, "Payment accepted, token=" + token);
+            return token;
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // One-shot ECDH handshake — call once on VPN start to obtain session token + AES key
     // -------------------------------------------------------------------------
 
     public static HandshakeResult performHandshake(String ec2Host, int ec2Port,
-                                                    String bootstrapProxyHost, int bootstrapProxyPort) throws Exception {
+                                                    String bootstrapProxyHost, int bootstrapProxyPort,
+                                                    String paymentToken, android.net.Network network) throws Exception {
         long startTime = System.currentTimeMillis();
-        try (Socket socket = openSocket(ec2Host, ec2Port, bootstrapProxyHost, bootstrapProxyPort, null)) {
+        try (Socket socket = openSocket(ec2Host, ec2Port, bootstrapProxyHost, bootstrapProxyPort, null, network)) {
             socket.setSoTimeout(15000);
             InputStream in   = socket.getInputStream();
             OutputStream out = socket.getOutputStream();
@@ -214,6 +247,7 @@ public class SocksTcpRelay {
             hs.put("identity_pub", Base64.encodeToString(idPubDer, Base64.NO_WRAP));
             hs.put("session_pub",  Base64.encodeToString(sessionPubDer, Base64.NO_WRAP));
             hs.put("client_sig",   Base64.encodeToString(signer.sign(), Base64.NO_WRAP));
+            if (paymentToken != null) hs.put("payment_token", paymentToken);
             writeFrame(out, hs);
             Log.i(TAG, "Client out packet"+ hs);
 
@@ -383,9 +417,19 @@ public class SocksTcpRelay {
     private static Socket openSocket(String destHost, int destPort,
                                       String proxyHost, int proxyPort,
                                       Protector protector) throws IOException {
+        return openSocket(destHost, destPort, proxyHost, proxyPort, protector, null);
+    }
+
+    private static Socket openSocket(String destHost, int destPort,
+                                      String proxyHost, int proxyPort,
+                                      Protector protector, android.net.Network network) throws IOException {
         Socket socket = new Socket();
         if (proxyHost != null && !proxyHost.isEmpty()) {
-            // Connect to seller's SOCKS5 proxy first
+            if (network != null) {
+                try { network.bindSocket(socket); } catch (IOException e) {
+                    Log.w(TAG, "bindSocket to hotspot network failed: " + e.getMessage());
+                }
+            }
             socket.connect(new InetSocketAddress(proxyHost, proxyPort), 10000);
             socks5Connect(socket, destHost, destPort);
         } else {

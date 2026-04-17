@@ -24,7 +24,7 @@ public class IpPacketParser {
 
         PacketInfo info = new PacketInfo();
         
-        // Byte 0: Version (4 bits) + IHL (4 bits)
+        // Byte 0: Version (4 bits) + Internet Header Length (IHL) (4 bits)
         byte versionIhl = buffer.get(0);
         int version = (versionIhl >> 4) & 0x0F;
         int ihl = (versionIhl & 0x0F) * 4;

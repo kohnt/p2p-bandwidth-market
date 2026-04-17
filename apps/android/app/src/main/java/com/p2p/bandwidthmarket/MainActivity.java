@@ -237,29 +237,53 @@ public class MainActivity extends AppCompatActivity {
             Toast.makeText(this, "Please enter a valid data amount", Toast.LENGTH_SHORT).show();
             return;
         }
+        if (currentProxyIp == null || currentProxyIp.isEmpty()) {
+            Toast.makeText(this, "Not connected to a seller hotspot", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
         String label = selectedDataLabel();
-        statusText.setText("Purchasing...");
-        setInfo("Minting " + label + " token via EC2...");
-        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
-            proxyServer.authorizeClient("10.0.0.2"); // TUN local address
-            proxyServer.setPreAuthMode(false);
-            sessionController.startSession(
-                quotaBytes,
-                com.p2p.bandwidthmarket.core.MarketVpnService::getBytesRelayed,
-                () -> runOnUiThread(() -> {
-                    stopVpnService();
-                    statusText.setText("Quota Exhausted");
-                    quotaText.setText("0 MB");
-                    setInfo(label + " quota used — session ended.");
-                    Toast.makeText(this, label + " quota used — session ended", Toast.LENGTH_LONG).show();
-                })
-            );
-            quotaText.setText(label);
-            statusText.setText("Token Ready");
-            setInfo("Token minted. Starting VPN...");
-            Toast.makeText(this, "Purchase Successful!", Toast.LENGTH_SHORT).show();
-            startVpn();
-        }, 2000);
+        int amountMb = (int) (quotaBytes / (1024 * 1024));
+        purchaseButton.setEnabled(false);
+        statusText.setText("Paying...");
+        setInfo("Sending payment request to EC2...");
+
+        new Thread(() -> {
+            try {
+                String paymentToken = com.p2p.bandwidthmarket.core.SocksTcpRelay.performPayment(
+                        com.p2p.bandwidthmarket.core.MarketVpnService.EC2_HOST,
+                        com.p2p.bandwidthmarket.core.MarketVpnService.EC2_PORT,
+                        currentProxyIp, 8080, amountMb, currentNetwork);
+
+                runOnUiThread(() -> {
+                    proxyServer.authorizeClient("10.0.0.2");
+                    proxyServer.setPreAuthMode(false);
+                    sessionController.startSession(
+                        quotaBytes,
+                        com.p2p.bandwidthmarket.core.MarketVpnService::getBytesRelayed,
+                        () -> runOnUiThread(() -> {
+                            stopVpnService();
+                            statusText.setText("Quota Exhausted");
+                            quotaText.setText("0 MB");
+                            setInfo(label + " quota used — session ended.");
+                            Toast.makeText(this, label + " quota used — session ended", Toast.LENGTH_LONG).show();
+                        })
+                    );
+                    quotaText.setText(label);
+                    statusText.setText("Payment OK");
+                    setInfo("Payment accepted. Starting VPN...");
+                    Toast.makeText(this, "Payment successful!", Toast.LENGTH_SHORT).show();
+                    purchaseButton.setEnabled(true);
+                    startVpn(paymentToken);
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    statusText.setText("Payment Failed");
+                    setInfo("Payment error: " + e.getMessage());
+                    purchaseButton.setEnabled(true);
+                });
+            }
+        }, "payment-thread").start();
     }
 
     private void stopVpnService() {
@@ -268,7 +292,10 @@ public class MainActivity extends AppCompatActivity {
         startService(intent);
     }
 
-    private void startVpn() {
+    private String pendingPaymentToken;
+
+    private void startVpn(String paymentToken) {
+        pendingPaymentToken = paymentToken;
         com.p2p.bandwidthmarket.core.MarketVpnService.resetBytesRelayed();
         android.content.Intent intent = android.net.VpnService.prepare(this);
         if (intent != null) {
@@ -285,6 +312,10 @@ public class MainActivity extends AppCompatActivity {
             android.content.Intent intent = new android.content.Intent(this, com.p2p.bandwidthmarket.core.MarketVpnService.class);
             intent.putExtra("SELLER_TOKEN", currentSellerToken);
             intent.putExtra("BOOTSTRAP_PROXY_HOST", currentProxyIp);
+            if (pendingPaymentToken != null) {
+                intent.putExtra("PAYMENT_TOKEN", pendingPaymentToken);
+                pendingPaymentToken = null;
+            }
             startService(intent);
             statusText.setText("VPN Active");
             setInfo("Tunneling through EC2 relay (seller: " + currentSellerToken + ")");
