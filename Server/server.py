@@ -64,7 +64,7 @@ def _load_server_public() -> ec.EllipticCurvePublicKey:
 # ---------------------------------------------------------------------------
 
 _seen_nonces: dict[bytes, int] = {}
-NONCE_WINDOW_MS = 30_000  # 30 seconds
+NONCE_WINDOW_MS = 300_000  # 5 minutes
 
 def check_replay(nonce: bytes, timestamp: int):
     now = int(time.time() * 1000)
@@ -273,6 +273,36 @@ async def handle_handshake(reader: asyncio.StreamReader,
         writer.close()
 
 # ---------------------------------------------------------------------------
+# Payment handler
+# ---------------------------------------------------------------------------
+
+async def handle_payment(reader: asyncio.StreamReader,
+                          writer: asyncio.StreamWriter,
+                          first_frame: bytes) -> None:
+    peer = writer.get_extra_info("peername")
+    try:
+        packet    = json.loads(first_frame.decode("utf-8"))
+        amount_mb = int(packet.get("amount_mb", 0))
+        if amount_mb <= 0:
+            raise ValueError(f"Invalid amount_mb: {amount_mb}")
+
+        payment_token = secrets.token_hex(16)
+        await write_frame(writer, {
+            "status":        "ok",
+            "payment_token": payment_token,
+        })
+        log.info("[payment] OK — %d MB token=%s peer=%s", amount_mb, payment_token, peer)
+
+    except Exception as exc:
+        log.warning("[payment] FAILED from %s: %s", peer, exc)
+        try:
+            await write_frame(writer, {"status": "error", "error": str(exc)})
+        except Exception:
+            pass
+    finally:
+        writer.close()
+
+# ---------------------------------------------------------------------------
 # Seller registration handler
 # ---------------------------------------------------------------------------
 
@@ -447,6 +477,8 @@ async def main_handler(reader: asyncio.StreamReader,
             await handle_relay(reader, writer, first_frame)
         elif msg_type == "seller_register":
             await handle_seller(reader, writer, first_frame)
+        elif msg_type == "payment":
+            await handle_payment(reader, writer, first_frame)
         else:
             log.warning("[dispatch] unknown type %r from %s — dropping", msg_type, peer)
             writer.close()
