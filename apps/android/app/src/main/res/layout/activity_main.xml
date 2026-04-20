@@ -1,0 +1,316 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#EEF2F7"
+    android:fillViewport="true"
+    tools:context=".MainActivity">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingHorizontal="24dp"
+        android:paddingBottom="32dp">
+
+        <!-- Mode badge -->
+        <TextView
+            android:id="@+id/textView_mode_badge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="40dp"
+            android:background="@drawable/bg_mode_badge"
+            android:paddingHorizontal="14dp"
+            android:paddingVertical="6dp"
+            android:text="ACTIVE MODE: SELLER"
+            android:textColor="#10B981"
+            android:textSize="11sp"
+            android:letterSpacing="0.08"
+            android:textAllCaps="true" />
+
+        <!-- Title -->
+        <TextView
+            android:id="@+id/textView_mode"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="10dp"
+            android:text="Seller Mode"
+            android:textColor="#0F172A"
+            android:textSize="34sp"
+            android:textStyle="bold" />
+
+        <!-- Stats row: Quota | Usage -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:orientation="horizontal">
+
+            <!-- Quota card -->
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginEnd="8dp"
+                android:background="@drawable/bg_stat_card"
+                android:elevation="2dp"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="QUOTA"
+                    android:textColor="#94A3B8"
+                    android:textSize="10sp"
+                    android:letterSpacing="0.08"
+                    android:textAllCaps="true" />
+
+                <TextView
+                    android:id="@+id/textView_quota"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="Unlimited"
+                    android:textColor="#2563EB"
+                    android:textSize="20sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <!-- Usage card -->
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_stat_card"
+                android:elevation="2dp"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="USAGE"
+                    android:textColor="#94A3B8"
+                    android:textSize="10sp"
+                    android:letterSpacing="0.08"
+                    android:textAllCaps="true" />
+
+                <TextView
+                    android:id="@+id/textView_usage"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="0 B"
+                    android:textColor="#0F172A"
+                    android:textSize="20sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/textView_speed"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="0.0 KB/s"
+                    android:textColor="#94A3B8"
+                    android:textSize="12sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Status chip -->
+        <TextView
+            android:id="@+id/textView_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/bg_mode_badge"
+            android:paddingHorizontal="16dp"
+            android:paddingVertical="6dp"
+            android:text="Idle"
+            android:textColor="#64748B"
+            android:textSize="12sp"
+            android:letterSpacing="0.04" />
+
+        <!-- Hotspot card button -->
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="180dp"
+            android:layout_marginTop="20dp">
+
+            <Button
+                android:id="@+id/button_hotspot"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@drawable/bg_hotspot_card"
+                android:text="START HOTSPOT"
+                android:textColor="#FFFFFF"
+                android:textSize="15sp"
+                android:letterSpacing="0.1"
+                android:textStyle="bold"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:elevation="4dp" />
+
+            <!-- Quick action chip -->
+            <LinearLayout
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_gravity="top|end"
+                android:layout_margin="14dp"
+                android:background="@drawable/bg_quick_action"
+                android:elevation="6dp"
+                android:gravity="center">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="&#9889;"
+                    android:textColor="#2563EB"
+                    android:textSize="20sp" />
+            </LinearLayout>
+        </FrameLayout>
+
+        <!-- Data amount picker (buyer mode only) -->
+        <LinearLayout
+            android:id="@+id/layout_data_amount"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/bg_stat_card"
+            android:elevation="2dp"
+            android:orientation="vertical"
+            android:padding="16dp"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="SELECT DATA AMOUNT"
+                android:textColor="#94A3B8"
+                android:textSize="10sp"
+                android:letterSpacing="0.08"
+                android:textAllCaps="true" />
+
+            <RadioGroup
+                android:id="@+id/radioGroup_data"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:orientation="vertical">
+
+                <RadioButton
+                    android:id="@+id/radio_10mb"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:text="10 MB"
+                    android:textColor="#0F172A"
+                    android:textSize="15sp"
+                    android:checked="true" />
+
+                <RadioButton
+                    android:id="@+id/radio_25mb"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:text="25 MB"
+                    android:textColor="#0F172A"
+                    android:textSize="15sp" />
+
+                <RadioButton
+                    android:id="@+id/radio_50mb"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:text="50 MB"
+                    android:textColor="#0F172A"
+                    android:textSize="15sp" />
+
+                <RadioButton
+                    android:id="@+id/radio_100mb"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:text="100 MB"
+                    android:textColor="#0F172A"
+                    android:textSize="15sp" />
+
+                <RadioButton
+                    android:id="@+id/radio_custom"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:text="Custom..."
+                    android:textColor="#0F172A"
+                    android:textSize="15sp" />
+            </RadioGroup>
+
+            <!-- Custom MB input (shown only when Custom is selected) -->
+            <EditText
+                android:id="@+id/editText_custom_mb"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:hint="Enter MB (e.g. 200)"
+                android:inputType="numberDecimal"
+                android:textColor="#0F172A"
+                android:textColorHint="#94A3B8"
+                android:textSize="14sp"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <!-- Info panel: connection details, errors, instructions -->
+        <LinearLayout
+            android:id="@+id/layout_info"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/bg_stat_card"
+            android:elevation="2dp"
+            android:orientation="vertical"
+            android:padding="16dp"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="INFO"
+                android:textColor="#94A3B8"
+                android:textSize="10sp"
+                android:letterSpacing="0.08"
+                android:textAllCaps="true" />
+
+            <TextView
+                android:id="@+id/textView_info"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:textColor="#0F172A"
+                android:textSize="13sp"
+                android:lineSpacingMultiplier="1.4" />
+        </LinearLayout>
+
+        <!-- Purchase button (hidden by default, shown in buyer mode) -->
+        <Button
+            android:id="@+id/button_purchase"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Purchase 10 MB Token"
+            android:visibility="gone" />
+
+        <!-- Switch mode -->
+        <Button
+            android:id="@+id/button_mode"
+            style="@style/Widget.MaterialComponents.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="16dp"
+            android:text="&#8644;  SWITCH TO BUYER MODE"
+            android:textColor="#94A3B8"
+            android:textSize="13sp"
+            android:letterSpacing="0.06" />
+
+    </LinearLayout>
+</ScrollView>

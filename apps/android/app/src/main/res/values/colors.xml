@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand -->
+    <color name="accent_blue">#4F8EF7</color>
+    <color name="accent_blue_dark">#2563EB</color>
+    <color name="accent_green">#10D9A0</color>
+    <color name="accent_cyan">#22D3EE</color>
+
+    <!-- Backgrounds -->
+    <color name="bg_dark">#0B0F1A</color>
+    <color name="surface">#111827</color>
+    <color name="stroke">#1F3355</color>
+    <color name="divider">#1E293B</color>
+
+    <!-- Text -->
+    <color name="text_primary">#F1F5F9</color>
+    <color name="text_secondary">#94A3B8</color>
+    <color name="text_label">#475569</color>
+
+    <!-- Kept for compatibility -->
+    <color name="white">#FFFFFFFF</color>
+    <color name="black">#FF000000</color>
+</resources>
